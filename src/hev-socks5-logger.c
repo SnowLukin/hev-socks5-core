@@ -121,8 +121,15 @@ hev_socks5_logger_log (HevSocks5LoggerLevel level, const char *fmt, ...)
 
     if (len < 0)
         return;
-    if (len >= (int)sizeof (msg))
-        len = sizeof (msg) - 1;
+    if (len >= (int)sizeof (msg)) {
+        static const char marker[] = " [truncated]";
+        size_t prefix = sizeof (msg) - sizeof (marker);
+
+        while (prefix > 0 && ((unsigned char)msg[prefix] & 0xc0) == 0x80)
+            prefix--;
+        memcpy (msg + prefix, marker, sizeof (marker));
+        len = prefix + sizeof (marker) - 1;
+    }
     iov[2].iov_len = len;
 
     if (history_writer) {
