@@ -400,7 +400,7 @@ part_has_newline (const char *path, off_t bytes)
 }
 
 static int
-cleanup_locked (void)
+cleanup_locked (off_t reserved_bytes)
 {
     struct log_part *parts;
     uint64_t highest;
@@ -410,12 +410,15 @@ cleanup_locked (void)
     size_t remaining;
     off_t bytes = 0;
 
+    if (reserved_bytes < 0 || reserved_bytes > (off_t)history_policy.max_source_bytes)
+        return -1;
     if (collect_parts_locked (&parts, &count, &highest) < 0)
         return -1;
     original_count = count;
     remaining = count;
     for (index = 0; index < count; index++)
         bytes += parts[index].bytes;
+    bytes += reserved_bytes;
     qsort (parts, count, sizeof (*parts), part_compare);
 
     for (index = 0; index < original_count &&
@@ -462,6 +465,19 @@ open_new_part_locked (void)
     else
         history_next_number++;
     return 0;
+}
+
+static void
+discard_active_part_locked (void)
+{
+    if (history_fd >= 0) {
+        close (history_fd);
+        history_fd = -1;
+    }
+    if (history_active_path[0])
+        unlink (history_active_path);
+    history_active_path[0] = '\0';
+    history_active_bytes = 0;
 }
 
 static int
@@ -512,7 +528,7 @@ open_history_locked (void)
     }
     free_parts (parts, count);
 
-    if (cleanup_locked () < 0) {
+    if (cleanup_locked (0) < 0) {
         close (history_fd);
         history_fd = -1;
         return -1;
@@ -695,9 +711,7 @@ void
 hev_socks5_log_history_write (const char *level, const char *message)
 {
     char *record;
-    char *rotation;
     size_t length;
-    size_t rotation_length;
 
     pthread_mutex_lock (&history_lock);
     if (history_fd < 0 || history_failed) {
@@ -739,45 +753,16 @@ hev_socks5_log_history_write (const char *level, const char *message)
             pthread_mutex_unlock (&history_lock);
             return;
         }
-        rotation = build_record ("info", "rotation", "log segment rotated", 0);
-        if (!rotation) {
-            free (record);
-            fail_locked ("encode-failed");
-            pthread_mutex_unlock (&history_lock);
-            return;
-        }
-        rotation_length = strlen (rotation);
-        if (rotation_length + length > history_policy.max_segment_bytes) {
-            free (record);
-            record = build_record (level, "log", "record exceeds maxSegmentBytes", 1);
-            if (!record) {
-                free (rotation);
-                fail_locked ("encode-failed");
-                pthread_mutex_unlock (&history_lock);
-                return;
-            }
-            length = strlen (record);
-        }
-        if (rotation_length > history_policy.max_segment_bytes ||
-            rotation_length + length > history_policy.max_segment_bytes) {
-            free (rotation);
-            free (record);
-            fail_locked ("record-too-large");
-            pthread_mutex_unlock (&history_lock);
-            return;
-        }
-        if (write_record_locked (rotation, rotation_length) < 0 ||
-            write_record_locked (record, length) < 0) {
-            free (rotation);
-            free (record);
-            fail_locked ("write-failed");
-            pthread_mutex_unlock (&history_lock);
-            return;
-        }
-        free (rotation);
-        if (cleanup_locked () < 0) {
+        if (cleanup_locked ((off_t)length) < 0) {
+            discard_active_part_locked ();
             free (record);
             fail_locked ("cleanup-failed");
+            pthread_mutex_unlock (&history_lock);
+            return;
+        }
+        if (write_record_locked (record, length) < 0) {
+            free (record);
+            fail_locked ("write-failed");
             pthread_mutex_unlock (&history_lock);
             return;
         }
