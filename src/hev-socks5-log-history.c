@@ -187,7 +187,7 @@ build_record (const char *level, const char *kind, const char *message, int trun
     return record;
 }
 
-static void
+static int
 write_state_locked (const char *status, const char *error_code)
 {
     char *escaped_connection;
@@ -198,7 +198,7 @@ write_state_locked (const char *status, const char *error_code)
 
     escaped_connection = history_connection_id ? json_string (history_connection_id) : NULL;
     if (history_connection_id && !escaped_connection)
-        return;
+        return -1;
 
     if (error_code) {
         length = snprintf (state, sizeof (state),
@@ -212,30 +212,35 @@ write_state_locked (const char *status, const char *error_code)
     free (escaped_connection);
 
     if (length <= 0 || (size_t)length >= sizeof (state))
-        return;
+        return -1;
 
     memcpy (history_state, state, (size_t)length + 1);
     if (!history_directory)
-        return;
+        return 0;
 
     snprintf (temporary, sizeof (temporary), "%s/.tun2socks.state.%ld",
               history_directory, (long)getpid ());
     fd = open (temporary, O_WRONLY | O_CREAT | O_TRUNC, 0640);
-    if (fd < 0 || write (fd, state, (size_t)length) != length) {
-        if (fd >= 0)
-            close (fd);
+    if (fd < 0)
+        return -1;
+    if (write (fd, state, (size_t)length) != length) {
+        close (fd);
         unlink (temporary);
-        return;
+        return -1;
     }
-    close (fd);
-    snprintf (temporary, sizeof (temporary), "%s/.tun2socks.state.%ld",
-              history_directory, (long)getpid ());
+    if (close (fd) < 0) {
+        unlink (temporary);
+        return -1;
+    }
     {
         char path[PATH_MAX];
         snprintf (path, sizeof (path), "%s/tun2socks.state.json", history_directory);
-        if (rename (temporary, path) < 0)
+        if (rename (temporary, path) < 0) {
             unlink (temporary);
+            return -1;
+        }
     }
+    return 0;
 }
 
 static void
@@ -328,8 +333,13 @@ part_compare (const void *left, const void *right)
         return -1;
     if (!a->legacy && b->legacy)
         return 1;
-    if (a->legacy || b->legacy)
+    if (a->legacy || b->legacy) {
+        if (a->ordinal < b->ordinal)
+            return -1;
+        if (a->ordinal > b->ordinal)
+            return 1;
         return strcmp (a->path, b->path);
+    }
     if (a->ordinal < b->ordinal)
         return -1;
     if (a->ordinal > b->ordinal)
@@ -366,7 +376,8 @@ collect_parts_locked (struct log_part **parts, size_t *count, uint64_t *highest)
             continue;
         if (stat (path, &st) < 0 || !S_ISREG (st.st_mode))
             continue;
-        if (append_part (parts, count, &capacity, path, &st, number,
+        if (append_part (parts, count, &capacity, path, &st,
+                         numbered ? number : (0 == strcmp (entry->d_name, "tun2socks.log.old") ? 0 : 1),
                          !numbered,
                          0 == strcmp (path, history_active_path)) < 0) {
             closedir (dir);
@@ -490,6 +501,7 @@ open_history_locked (void)
     size_t last_index = 0;
     uint64_t last_number = 0;
     int found = 0;
+    int opened_new = 0;
     int fd;
 
     if (mkdir (history_directory, 0700) < 0 && errno != EEXIST)
@@ -522,15 +534,22 @@ open_history_locked (void)
         history_active_bytes = parts[last_index].bytes;
         memcpy (history_active_path, parts[last_index].path,
                 strlen (parts[last_index].path) + 1);
-    } else if (open_new_part_locked () < 0) {
-        free_parts (parts, count);
-        return -1;
+    } else {
+        if (open_new_part_locked () < 0) {
+            free_parts (parts, count);
+            return -1;
+        }
+        opened_new = 1;
     }
     free_parts (parts, count);
 
     if (cleanup_locked (0) < 0) {
-        close (history_fd);
-        history_fd = -1;
+        if (opened_new)
+            discard_active_part_locked ();
+        else if (history_fd >= 0) {
+            close (history_fd);
+            history_fd = -1;
+        }
         return -1;
     }
     return 0;
@@ -596,12 +615,24 @@ hev_socks5_tunnel_log_history_configure (const char *directory,
     pthread_mutex_lock (&history_lock);
     if (history_refs > 0) {
         if (!directory_copy) {
+            int state_failed = 0;
+            int close_failed = 0;
+            int previous_failed = history_failed;
+
             if (history_fd >= 0) {
-                close (history_fd);
+                if (close (history_fd) < 0)
+                    close_failed = 1;
                 history_fd = -1;
             }
-            history_failed = 0;
-            write_state_locked ("closed", NULL);
+            if (close_failed) {
+                history_failed = 1;
+                write_state_locked ("failed", "write-failed");
+                state_failed = 1;
+            } else if (!previous_failed && write_state_locked ("closed", NULL) < 0) {
+                history_failed = 1;
+                write_state_locked ("failed", "state-write-failed");
+                state_failed = 1;
+            }
             free (history_directory);
             free (history_connection_id);
             history_directory = NULL;
@@ -609,7 +640,7 @@ hev_socks5_tunnel_log_history_configure (const char *directory,
             history_configured = 0;
             history_active_path[0] = '\0';
             pthread_mutex_unlock (&history_lock);
-            return 0;
+            return state_failed ? -1 : 0;
         }
         pthread_mutex_unlock (&history_lock);
         free (directory_copy);
@@ -671,8 +702,9 @@ hev_socks5_log_history_acquire (void)
         if (open_history_locked () < 0) {
             fail_locked ("open-failed");
             result = -1;
-        } else {
-            write_state_locked ("active", NULL);
+        } else if (write_state_locked ("active", NULL) < 0) {
+            fail_locked ("state-write-failed");
+            result = -1;
         }
     }
     if (result == 0)
@@ -689,9 +721,13 @@ hev_socks5_log_history_release (void)
     if (history_refs > 0)
         history_refs--;
     if (history_refs == 0 && history_fd >= 0) {
-        close (history_fd);
+        int close_failed = close (history_fd) < 0;
+
         history_fd = -1;
-        write_state_locked ("closed", NULL);
+        if (close_failed)
+            fail_locked ("write-failed");
+        else if (write_state_locked ("closed", NULL) < 0)
+            fail_locked ("state-write-failed");
     }
     pthread_mutex_unlock (&history_lock);
 }
