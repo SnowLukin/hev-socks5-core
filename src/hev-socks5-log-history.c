@@ -83,37 +83,44 @@ json_string (const char *value)
 
     target = escaped;
     *target++ = '"';
-    for (index = 0; index < length; index++) {
+    for (index = 0; index < length;) {
         unsigned char c = source[index];
 
         switch (c) {
         case '"':
             *target++ = '\\';
             *target++ = '"';
+            index++;
             break;
         case '\\':
             *target++ = '\\';
             *target++ = '\\';
+            index++;
             break;
         case '\b':
             *target++ = '\\';
             *target++ = 'b';
+            index++;
             break;
         case '\f':
             *target++ = '\\';
             *target++ = 'f';
+            index++;
             break;
         case '\n':
             *target++ = '\\';
             *target++ = 'n';
+            index++;
             break;
         case '\r':
             *target++ = '\\';
             *target++ = 'r';
+            index++;
             break;
         case '\t':
             *target++ = '\\';
             *target++ = 't';
+            index++;
             break;
         default:
             if (c < 0x20) {
@@ -124,8 +131,40 @@ json_string (const char *value)
                 *target++ = '0';
                 *target++ = hex[c >> 4];
                 *target++ = hex[c & 0x0f];
-            } else {
+                index++;
+            } else if (c < 0x80) {
                 *target++ = (char)c;
+                index++;
+            } else {
+                size_t utf8_length = 0;
+
+                if (c >= 0xc2 && c <= 0xdf && index + 1 < length &&
+                    (source[index + 1] & 0xc0) == 0x80) {
+                    utf8_length = 2;
+                } else if (c >= 0xe0 && c <= 0xef && index + 2 < length &&
+                           (source[index + 1] & 0xc0) == 0x80 &&
+                           (source[index + 2] & 0xc0) == 0x80 &&
+                           !(c == 0xe0 && source[index + 1] < 0xa0) &&
+                           !(c == 0xed && source[index + 1] > 0x9f)) {
+                    utf8_length = 3;
+                } else if (c >= 0xf0 && c <= 0xf4 && index + 3 < length &&
+                           (source[index + 1] & 0xc0) == 0x80 &&
+                           (source[index + 2] & 0xc0) == 0x80 &&
+                           (source[index + 3] & 0xc0) == 0x80 &&
+                           !(c == 0xf0 && source[index + 1] < 0x90) &&
+                           !(c == 0xf4 && source[index + 1] > 0x8f)) {
+                    utf8_length = 4;
+                }
+                if (utf8_length) {
+                    memcpy (target, source + index, utf8_length);
+                    target += utf8_length;
+                    index += utf8_length;
+                } else {
+                    *target++ = (char)0xef;
+                    *target++ = (char)0xbf;
+                    *target++ = (char)0xbd;
+                    index++;
+                }
             }
             break;
         }
