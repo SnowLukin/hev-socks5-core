@@ -126,6 +126,75 @@ connection_refusal (void)
     hev_object_unref (HEV_OBJECT (client));
 }
 
+static void
+connection_timeout (void)
+{
+    struct sockaddr_in6 addr = { 0 };
+    socklen_t len = sizeof (addr);
+    HevSocks5ClientTCP *client;
+    int queued[16], count = 0, pending = 0;
+    int listener, i;
+    char code[32];
+#ifndef CORE_LEGACY_UDP
+    int previous_timeout = hev_socks5_get_connect_timeout ();
+#endif
+
+    listener = socket (AF_INET6, SOCK_STREAM, 0);
+    assert (listener >= 0);
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_loopback;
+    assert (!bind (listener, (struct sockaddr *)&addr, sizeof (addr)));
+    assert (!getsockname (listener, (struct sockaddr *)&addr, &len));
+    assert (!listen (listener, 1));
+
+    while (count < 16) {
+        struct pollfd poll_fd;
+        int error = 0;
+        socklen_t error_len = sizeof (error);
+        int fd = hev_task_io_socket_socket (AF_INET6, SOCK_STREAM, 0);
+        assert (fd >= 0);
+        queued[count++] = fd;
+        if (connect (fd, (struct sockaddr *)&addr, sizeof (addr)) == 0)
+            continue;
+        assert (errno == EINPROGRESS);
+        poll_fd.fd = fd;
+        poll_fd.events = POLLOUT;
+        poll_fd.revents = 0;
+        i = poll (&poll_fd, 1, 10);
+        assert (i >= 0);
+        if (i == 0) {
+            pending = 1;
+            break;
+        }
+        assert (!getsockopt (fd, SOL_SOCKET, SO_ERROR, &error, &error_len));
+        assert (!error);
+    }
+    assert (pending);
+
+    begin_log ();
+    client = new_client (1);
+#ifdef CORE_LEGACY_UDP
+    hev_socks5_set_timeout (HEV_SOCKS5 (client), 10);
+#else
+    hev_socks5_set_connect_timeout (10);
+#endif
+    errno = EACCES;
+    assert (hev_socks5_client_connect (HEV_SOCKS5_CLIENT (client), "::1",
+                                       ntohs (addr.sin6_port)) < 0);
+#ifndef CORE_LEGACY_UDP
+    hev_socks5_set_connect_timeout (previous_timeout);
+#endif
+    expect_log ("target=[2001:db8::1]:443",
+                "operation=proxy-connect reason=timeout");
+    snprintf (code, sizeof (code), "code=%d", ETIMEDOUT);
+    assert (strstr (log_text, code));
+    assert (!strstr (log_text, strerror (EACCES)));
+    hev_object_unref (HEV_OBJECT (client));
+    for (i = 0; i < count; i++)
+        close (queued[i]);
+    close (listener);
+}
+
 static HevSocks5 *cancel_client;
 static HevTask *waiting_task;
 
@@ -777,6 +846,7 @@ run (void *data)
     successful_handshake (1, 1);
     successful_udp ();
     connection_refusal ();
+    connection_timeout ();
     wait_case (0);
     wait_case (1);
     wait_case (2);
