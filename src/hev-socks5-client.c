@@ -53,6 +53,32 @@ hev_socks5_client_reply_reason (int reply)
 }
 
 static int
+hev_socks5_client_read_exact (HevSocks5Client *self, void *buf, size_t size,
+                              const char *operation)
+{
+    size_t offset = 0;
+
+    while (offset < size) {
+        int res;
+        int error_code;
+
+        res = hev_task_io_socket_recv (HEV_SOCKS5 (self)->fd,
+                                       (char *)buf + offset, size - offset, 0,
+                                       task_io_yielder, self);
+        error_code = errno;
+        if (res <= 0) {
+            hev_socks5_log_failure (HEV_SOCKS5 (self), operation,
+                                    res < 0 ? NULL : "unexpected EOF",
+                                    res < 0 ? error_code : 0);
+            return -1;
+        }
+        offset += res;
+    }
+
+    return 0;
+}
+
+static int
 hev_socks5_client_write_auth_methods (HevSocks5Client *self)
 {
     HevSocks5Auth auth;
@@ -73,8 +99,8 @@ hev_socks5_client_write_auth_methods (HevSocks5Client *self)
     if (res <= 0) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-methods",
-                                 res < 0 ? NULL : "incomplete write",
-                                 res < 0 ? error_code : 0);
+                                res < 0 ? NULL : "incomplete write",
+                                res < 0 ? error_code : 0);
         return -1;
     }
 
@@ -114,8 +140,8 @@ hev_socks5_client_write_auth_creds (HevSocks5Client *self)
     if (res <= 0) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-creds",
-                                 res < 0 ? NULL : "incomplete write",
-                                 res < 0 ? error_code : 0);
+                                res < 0 ? NULL : "incomplete write",
+                                res < 0 ? error_code : 0);
         return -1;
     }
 
@@ -159,7 +185,7 @@ hev_socks5_client_write_request (HevSocks5Client *self)
     addr = klass->get_upstream_addr (self);
     if (!addr) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-request",
-                                 "missing destination address", 0);
+                                "missing destination address", 0);
         return -1;
     }
 
@@ -175,7 +201,7 @@ hev_socks5_client_write_request (HevSocks5Client *self)
         break;
     default:
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-request",
-                                 "unsupported address type", addr->atype);
+                                "unsupported address type", addr->atype);
         hev_free (addr);
         return -1;
     }
@@ -190,8 +216,8 @@ hev_socks5_client_write_request (HevSocks5Client *self)
     if (ret <= 0) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-request",
-                                 ret < 0 ? NULL : "incomplete write",
-                                 ret < 0 ? error_code : 0);
+                                ret < 0 ? NULL : "incomplete write",
+                                ret < 0 ? error_code : 0);
         hev_free (addr);
         return -1;
     }
@@ -209,19 +235,13 @@ hev_socks5_client_read_auth_method (HevSocks5Client *self)
 
     LOG_D ("%p socks5 client read auth method", self);
 
-    res = hev_task_io_socket_recv (HEV_SOCKS5 (self)->fd, &auth, 2, MSG_WAITALL,
-                                   task_io_yielder, self);
-    if (res != 2) {
-        int error_code = errno;
-        hev_socks5_log_failure (HEV_SOCKS5 (self), "read-auth-method",
-                                 res < 0 ? NULL : "unexpected EOF",
-                                 res < 0 ? error_code : 0);
+    res = hev_socks5_client_read_exact (self, &auth, 2, "read-auth-method");
+    if (res < 0)
         return -1;
-    }
 
     if (auth.ver != HEV_SOCKS5_VERSION_5) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "read-auth-method",
-                                 "invalid SOCKS5 version", auth.ver);
+                                "invalid SOCKS5 version", auth.ver);
         return -1;
     }
 
@@ -236,25 +256,19 @@ hev_socks5_client_read_auth_creds (HevSocks5Client *self)
 
     LOG_D ("%p socks5 client read auth creds", self);
 
-    ret = hev_task_io_socket_recv (HEV_SOCKS5 (self)->fd, &res, 2, MSG_WAITALL,
-                                   task_io_yielder, self);
-    if (ret != 2) {
-        int error_code = errno;
-        hev_socks5_log_failure (HEV_SOCKS5 (self), "read-auth-creds",
-                                 ret < 0 ? NULL : "unexpected EOF",
-                                 ret < 0 ? error_code : 0);
+    ret = hev_socks5_client_read_exact (self, &res, 2, "read-auth-creds");
+    if (ret < 0)
         return -1;
-    }
 
     if (res.ver != HEV_SOCKS5_AUTH_VERSION_1) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "read-auth-creds",
-                                 "invalid authentication version", res.ver);
+                                "invalid authentication version", res.ver);
         return -1;
     }
 
     if (res.rep != HEV_SOCKS5_RES_REP_SUCC) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "read-auth-creds",
-                                 "authentication rejected", res.rep);
+                                "authentication rejected", res.rep);
         return -1;
     }
 
@@ -273,26 +287,20 @@ hev_socks5_client_read_response (HevSocks5Client *self)
 
     LOG_D ("%p socks5 client read response", self);
 
-    ret = hev_task_io_socket_recv (HEV_SOCKS5 (self)->fd, &res, 4, MSG_WAITALL,
-                                   task_io_yielder, self);
-    if (ret != 4) {
-        int error_code = errno;
-        hev_socks5_log_failure (HEV_SOCKS5 (self), "read-response",
-                                 ret < 0 ? NULL : "unexpected EOF",
-                                 ret < 0 ? error_code : 0);
+    ret = hev_socks5_client_read_exact (self, &res, 4, "read-response");
+    if (ret < 0)
         return -1;
-    }
 
     if (res.ver != HEV_SOCKS5_VERSION_5) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "read-response",
-                                 "invalid SOCKS5 version", res.ver);
+                                "invalid SOCKS5 version", res.ver);
         return -1;
     }
 
     if (res.rep != HEV_SOCKS5_RES_REP_SUCC) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "read-response",
-                                 hev_socks5_client_reply_reason (res.rep),
-                                 res.rep);
+                                hev_socks5_client_reply_reason (res.rep),
+                                res.rep);
         return -1;
     }
 
@@ -305,25 +313,20 @@ hev_socks5_client_read_response (HevSocks5Client *self)
         break;
     default:
         hev_socks5_log_failure (HEV_SOCKS5 (self), "read-response",
-                                 "unsupported address type", res.addr.atype);
+                                "unsupported address type", res.addr.atype);
         return -1;
     }
 
-    ret = hev_task_io_socket_recv (HEV_SOCKS5 (self)->fd, &res.addr.ipv4,
-                                   addrlen, MSG_WAITALL, task_io_yielder, self);
-    if (ret != addrlen) {
-        int error_code = errno;
-        hev_socks5_log_failure (HEV_SOCKS5 (self), "read-response-address",
-                                 ret < 0 ? NULL : "unexpected EOF",
-                                 ret < 0 ? error_code : 0);
+    ret = hev_socks5_client_read_exact (self, &res.addr.ipv4, addrlen,
+                                        "read-response-address");
+    if (ret < 0)
         return -1;
-    }
 
     klass = HEV_OBJECT_GET_CLASS (self);
     ret = klass->set_upstream_addr (self, &res.addr);
     if (ret < 0) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "set-upstream-address",
-                                 "upstream address rejected", ret);
+                                "upstream address rejected", ret);
         return -1;
     }
 
@@ -350,7 +353,7 @@ hev_socks5_client_connect (HevSocks5Client *self, const char *addr, int port)
     res = hev_socks5_name_into_sockaddr6 (addr, port, &saddr, &addr_family);
     if (res < 0) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "proxy-resolve",
-                                 "name resolution failed", res);
+                                "name resolution failed", res);
         return -1;
     }
 
@@ -358,7 +361,7 @@ hev_socks5_client_connect (HevSocks5Client *self, const char *addr, int port)
     if (fd < 0) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "proxy-socket", NULL,
-                                 error_code);
+                                error_code);
         return -1;
     }
 
@@ -368,7 +371,7 @@ hev_socks5_client_connect (HevSocks5Client *self, const char *addr, int port)
     if (res < 0) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "proxy-bind", NULL,
-                                 error_code);
+                                error_code);
         hev_task_del_fd (hev_task_self (), fd);
         close (fd);
         return -1;
@@ -379,7 +382,7 @@ hev_socks5_client_connect (HevSocks5Client *self, const char *addr, int port)
     if (res < 0) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "proxy-connect", NULL,
-                                 error_code);
+                                error_code);
         hev_task_del_fd (hev_task_self (), fd);
         close (fd);
         return -1;
@@ -417,7 +420,7 @@ hev_socks5_client_handshake_standard (HevSocks5Client *self)
             return -1;
     } else if (res != HEV_SOCKS5_AUTH_METHOD_NONE) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "read-auth-method",
-                                 "authentication method rejected", res);
+                                "authentication method rejected", res);
         return -1;
     }
 
@@ -461,7 +464,7 @@ hev_socks5_client_handshake_pipeline (HevSocks5Client *self)
             return -1;
     } else if (res != HEV_SOCKS5_AUTH_METHOD_NONE) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "read-auth-method",
-                                 "authentication method rejected", res);
+                                "authentication method rejected", res);
         return -1;
     }
 
