@@ -49,12 +49,26 @@ task_io_yielder (HevTaskYieldType type, void *data)
 
         res = recv (self->fd, &buf, sizeof (buf), 0);
         if ((res == 0) || ((res < 0) && (errno != EAGAIN))) {
+            int error_code = errno;
+            hev_socks5_log_failure (self, "udp-control",
+                                     res < 0 ? NULL : "unexpected EOF",
+                                     res < 0 ? error_code : 0);
             hev_socks5_set_timeout (self, 0);
             return -1;
         }
     }
 
     return hev_socks5_task_io_yielder (type, data);
+}
+
+static void
+hev_socks5_udp_log_io_failure (HevSocks5UDP *self, const char *operation,
+                               int result, int error_code)
+{
+    if (result == -1 && error_code != EAGAIN && error_code != EWOULDBLOCK)
+        hev_socks5_log_failure (HEV_SOCKS5 (self), operation, NULL, error_code);
+    else if (result == 0)
+        hev_socks5_log_failure (HEV_SOCKS5 (self), operation, "unexpected EOF", 0);
 }
 
 int
@@ -80,7 +94,8 @@ hev_socks5_udp_sendto (HevSocks5UDP *self, const void *buf, size_t len,
 
     addrlen = hev_socks5_addr_len (addr);
     if (addrlen <= 0) {
-        LOG_D ("%p socks5 udp addr", self);
+        hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-address",
+                                 "invalid UDP address", addr->atype);
         return -1;
     }
 
@@ -111,7 +126,7 @@ hev_socks5_udp_sendto (HevSocks5UDP *self, const void *buf, size_t len,
     res = hev_task_io_socket_sendmsg (hev_socks5_udp_get_fd (self), &mh,
                                       MSG_WAITALL, task_io_yielder, self);
     if (res <= 0)
-        LOG_D ("%p socks5 udp write udp", self);
+        hev_socks5_udp_log_io_failure (self, "udp-write", res, errno);
 
     return res;
 }
@@ -132,13 +147,14 @@ hev_socks5_udp_recvfrom_tcp (HevSocks5UDP *self, void *buf, size_t len,
     res = hev_task_io_socket_recv (fd, &udp, 5, MSG_WAITALL, task_io_yielder,
                                    self);
     if (res <= 0) {
-        LOG_D ("%p socks5 udp read udp head", self);
+        hev_socks5_udp_log_io_failure (self, "udp-read", res, errno);
         return res;
     }
 
     udp.datlen = ntohs (udp.datlen);
     if (udp.datlen > len) {
-        LOG_D ("%p socks5 udp data len", self);
+        hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
+                                 "invalid UDP length", udp.datlen);
         return -1;
     }
 
@@ -154,7 +170,7 @@ hev_socks5_udp_recvfrom_tcp (HevSocks5UDP *self, void *buf, size_t len,
     res = hev_task_io_socket_recvmsg (fd, &mh, MSG_WAITALL, task_io_yielder,
                                       self);
     if (res <= 0) {
-        LOG_D ("%p socks5 udp read udp data", self);
+        hev_socks5_udp_log_io_failure (self, "udp-read", res, errno);
         return res;
     }
 
@@ -191,26 +207,32 @@ hev_socks5_udp_recvfrom_udp (HevSocks5UDP *self, void *buf, size_t len,
     rlen = hev_task_io_socket_recvfrom (fd, rbuf, sizeof (rbuf), 0, saddr,
                                         &alen, task_io_yielder, self);
     if (rlen < 4) {
-        LOG_D ("%p socks5 udp read", self);
+        hev_socks5_udp_log_io_failure (self, "udp-read", rlen, errno);
         return rlen;
     }
 
     if (saddr) {
         res = connect (fd, saddr, alen);
-        if (res < 0)
+        if (res < 0) {
+            int error_code = errno;
+            hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-connect", NULL,
+                                     error_code);
             return -1;
+        }
     }
 
     udp = (HevSocks5UDPHdr *)rbuf;
     addrlen = hev_socks5_addr_len (&udp->addr);
     if (addrlen <= 0) {
-        LOG_D ("%p socks5 udp addr", self);
+        hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-address",
+                                 "invalid UDP address", udp->addr.atype);
         return -1;
     }
 
     doff = 3 + addrlen;
     if (doff > rlen) {
-        LOG_D ("%p socks5 udp data len", self);
+        hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
+                                 "invalid UDP length", rlen);
         return -1;
     }
 
@@ -260,9 +282,13 @@ hev_socks5_udp_fwd_f (HevSocks5UDP *self, HevSocks5UDPSplice *splice)
     if (res <= 0) {
         if (res < -1) {
             splice->alive &= ~HEV_SOCKS5_UDP_ALIVE_F;
-            if (splice->alive && hev_socks5_get_timeout (HEV_SOCKS5 (self)))
+            if (splice->alive && hev_socks5_get_timeout (HEV_SOCKS5 (self))) {
+                HEV_SOCKS5 (self)->timed_out = 0;
                 return 0;
+            }
         }
+        if (HEV_SOCKS5 (self)->timed_out)
+            hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-relay", "timeout", 0);
         if (HEV_SOCKS5 (self)->type == HEV_SOCKS5_TYPE_UDP_IN_TCP)
             hev_socks5_set_timeout (HEV_SOCKS5 (self), 0);
         LOG_D ("%p socks5 udp fwd f recv", self);
@@ -322,9 +348,13 @@ hev_socks5_udp_fwd_b (HevSocks5UDP *self, HevSocks5UDPSplice *splice)
     if (res <= 0) {
         if (res < -1) {
             splice->alive &= ~HEV_SOCKS5_UDP_ALIVE_B;
-            if (splice->alive && hev_socks5_get_timeout (HEV_SOCKS5 (self)))
+            if (splice->alive && hev_socks5_get_timeout (HEV_SOCKS5 (self))) {
+                HEV_SOCKS5 (self)->timed_out = 0;
                 return 0;
+            }
         }
+        if (HEV_SOCKS5 (self)->timed_out)
+            hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-relay", "timeout", 0);
         if (HEV_SOCKS5 (self)->type == HEV_SOCKS5_TYPE_UDP_IN_TCP)
             hev_socks5_set_timeout (HEV_SOCKS5 (self), 0);
         LOG_D ("%p socks5 udp fwd b recv send", self);

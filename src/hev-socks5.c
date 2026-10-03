@@ -7,6 +7,7 @@
  ============================================================================
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -21,6 +22,43 @@
 #include "hev-socks5-logger-priv.h"
 
 #include "hev-socks5.h"
+
+void
+hev_socks5_set_diagnostic_target (HevSocks5 *self, const char *target)
+{
+    snprintf (self->diagnostic_target, sizeof (self->diagnostic_target), "%s",
+              target ? target : "");
+}
+
+void
+hev_socks5_log_failure (HevSocks5 *self, const char *operation,
+                         const char *reason, int error_code)
+{
+    const char *target = self->diagnostic_target;
+    int saved_errno = errno;
+
+    if (self->failure_logged || self->timeout == 0)
+        return;
+    self->failure_logged = 1;
+
+    if (!target[0]) {
+        if (self->type == HEV_SOCKS5_TYPE_UDP_IN_TCP ||
+            self->type == HEV_SOCKS5_TYPE_UDP_IN_UDP)
+            target = "udp-association";
+        else
+            target = "unknown";
+    }
+    if (self->timed_out) {
+        reason = "timeout";
+        error_code = ETIMEDOUT;
+    } else if (!reason) {
+        reason = strerror (error_code);
+    }
+
+    LOG_I ("%p socks5 failure target=%s operation=%s reason=%s code=%d", self,
+           target, operation, reason, error_code);
+    errno = saved_errno;
+}
 
 int
 hev_socks5_get_timeout (HevSocks5 *self)
@@ -68,6 +106,9 @@ hev_socks5_construct (HevSocks5 *self, HevSocks5Type type)
     self->fd = -1;
     self->timeout = -1;
     self->type = type;
+    self->timed_out = 0;
+    self->failure_logged = 0;
+    self->diagnostic_target[0] = '\0';
     self->addr_family = HEV_SOCKS5_ADDR_FAMILY_UNSPEC;
 
     return 0;
