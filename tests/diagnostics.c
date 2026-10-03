@@ -13,6 +13,7 @@
 #include <hev-task-io-socket.h>
 #include "hev-socks5-client-tcp.h"
 #include "hev-socks5-client-udp.h"
+#include "hev-socks5-server.h"
 #include "hev-socks5-misc.h"
 #include "hev-socks5-misc-priv.h"
 #include "hev-socks5-logger.h"
@@ -127,11 +128,12 @@ connection_refusal (void)
 }
 
 static void
-connection_timeout (void)
+connection_timeout (int server_mode)
 {
     struct sockaddr_in6 addr = { 0 };
     socklen_t len = sizeof (addr);
-    HevSocks5ClientTCP *client;
+    HevSocks5 *connection;
+    int peer = -1;
     int queued[16], count = 0, pending = 0;
     int listener, i;
     char code[32];
@@ -172,24 +174,44 @@ connection_timeout (void)
     assert (pending);
 
     begin_log ();
-    client = new_client (1);
+    if (server_mode) {
+        unsigned char request[25] = { 5, 1, 0, 5, 1, 0, 4 };
+        int fd[2];
+        assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+        connection = HEV_SOCKS5 (hev_socks5_server_new (fd[0]));
+        peer = fd[1];
+        memcpy (request + 7, &addr.sin6_addr, 16);
+        memcpy (request + 23, &addr.sin6_port, 2);
+        assert (write (peer, request, sizeof (request)) == sizeof (request));
+    } else {
+        connection = HEV_SOCKS5 (new_client (1));
+    }
 #ifdef CORE_LEGACY_UDP
-    hev_socks5_set_timeout (HEV_SOCKS5 (client), 10);
+    hev_socks5_set_timeout (connection, 10);
+    if (server_mode)
+        hev_socks5_server_set_connect_timeout (HEV_SOCKS5_SERVER (connection),
+                                               10);
 #else
     hev_socks5_set_connect_timeout (10);
 #endif
     errno = EACCES;
-    assert (hev_socks5_client_connect (HEV_SOCKS5_CLIENT (client), "::1",
-                                       ntohs (addr.sin6_port)) < 0);
+    if (server_mode)
+        assert (hev_socks5_server_run (HEV_SOCKS5_SERVER (connection)) < 0);
+    else
+        assert (hev_socks5_client_connect (HEV_SOCKS5_CLIENT (connection),
+                                           "::1", ntohs (addr.sin6_port)) < 0);
 #ifndef CORE_LEGACY_UDP
     hev_socks5_set_connect_timeout (previous_timeout);
 #endif
-    expect_log ("target=[2001:db8::1]:443",
-                "operation=proxy-connect reason=timeout");
+    expect_log (server_mode ? "target=unknown" : "target=[2001:db8::1]:443",
+                server_mode ? "operation=server-connect reason=timeout" :
+                              "operation=proxy-connect reason=timeout");
     snprintf (code, sizeof (code), "code=%d", ETIMEDOUT);
     assert (strstr (log_text, code));
     assert (!strstr (log_text, strerror (EACCES)));
-    hev_object_unref (HEV_OBJECT (client));
+    hev_object_unref (HEV_OBJECT (connection));
+    if (peer >= 0)
+        close (peer);
     for (i = 0; i < count; i++)
         close (queued[i]);
     close (listener);
@@ -205,6 +227,44 @@ cancel_wait (void *data)
     hev_task_sleep (5);
     hev_socks5_set_timeout (cancel_client, 0);
     hev_task_wakeup (waiting_task);
+}
+
+static void
+server_handshake_wait (int cancel)
+{
+    HevSocks5Server *server;
+    int fd[2];
+#ifndef CORE_LEGACY_UDP
+    int previous_timeout = hev_socks5_get_tcp_timeout ();
+    hev_socks5_set_tcp_timeout (15);
+#endif
+    begin_log ();
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    server = hev_socks5_server_new (fd[0]);
+    hev_socks5_set_timeout (HEV_SOCKS5 (server), cancel == 1 ? 0 : 15);
+    if (cancel == 2) {
+        HevTask *task = hev_task_new (16384);
+        cancel_client = HEV_SOCKS5 (server);
+        waiting_task = hev_task_self ();
+        hev_task_run (task, cancel_wait, NULL);
+    }
+    errno = EACCES;
+    assert (hev_socks5_server_run (server) < 0);
+#ifndef CORE_LEGACY_UDP
+    hev_socks5_set_tcp_timeout (previous_timeout);
+#endif
+    if (cancel) {
+        expect_silent_failure ();
+    } else {
+        char code[32];
+        expect_log ("target=unknown",
+                    "operation=server-handshake reason=timeout");
+        snprintf (code, sizeof (code), "code=%d", ETIMEDOUT);
+        assert (strstr (log_text, code));
+        assert (!strstr (log_text, strerror (EACCES)));
+    }
+    hev_object_unref (HEV_OBJECT (server));
+    close (fd[1]);
 }
 
 static void
@@ -763,7 +823,14 @@ terminal_udp_send (void)
 static void
 regressions (const char *selected)
 {
-    if (!strcmp (selected, "partial-reset")) {
+    if (!strcmp (selected, "server-timeout")) {
+        server_handshake_wait (0);
+        server_handshake_wait (1);
+        server_handshake_wait (2);
+        connection_timeout (1);
+    } else if (!strcmp (selected, "server-connect")) {
+        connection_timeout (1);
+    } else if (!strcmp (selected, "partial-reset")) {
         int i;
         for (i = 0; i < 4; i++)
             partial_reset (i);
@@ -846,13 +913,14 @@ run (void *data)
     successful_handshake (1, 1);
     successful_udp ();
     connection_refusal ();
-    connection_timeout ();
+    connection_timeout (0);
     wait_case (0);
     wait_case (1);
     wait_case (2);
     helper_cases ();
     udp_bind_failure ();
     udp_io_cases ();
+    regressions ("server-timeout");
     regressions ("partial-reset");
     regressions ("tcp-splice");
     regressions ("empty-udp");
