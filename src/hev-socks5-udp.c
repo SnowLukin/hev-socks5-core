@@ -243,14 +243,14 @@ hev_socks5_udp_recvmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
             return res < 0 ? res : received ? -2 : 0;
         }
 
-        if (udp.hdrlen < 5) {
+        addrlen = hev_socks5_addr_len (&udp.addr);
+        if (addrlen <= 0 || udp.hdrlen != 3 + addrlen) {
             hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
                                     "invalid UDP header length", udp.hdrlen);
             errno = EINVAL;
             return -1;
         }
 
-        addrlen = udp.hdrlen - 3;
         udp.datlen = ntohs (udp.datlen);
         if (addrlen > msgv[i].len ||
             udp.datlen > (msgv[i].len - addrlen)) {

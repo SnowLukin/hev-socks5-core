@@ -704,32 +704,40 @@ recoverable_udp_send (void)
 }
 #else
 static void
-successful_udp_tcp (void)
+successful_udp_tcp (int type)
 {
     HevSocks5ClientUDP *client;
     HevSocks5Addr addr;
     HevSocks5UDPMsg msg;
-    unsigned char ip[4] = { 203, 0, 113, 9 };
+    unsigned char ip[16] = { 0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
+                             0, 0, 0, 0, 0, 0, 0, 1 };
     unsigned char packet[32];
     char buf[1500];
-    int fd[2];
+    int fd[2], length;
 
     begin_log ();
     client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
     assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
     HEV_SOCKS5 (client)->fd = fd[0];
-    hev_socks5_addr_from_ipv4 (&addr, ip, htons (53));
+    if (type == 0)
+        hev_socks5_addr_from_ipv4 (&addr, ip, htons (53));
+    else if (type == 1)
+        hev_socks5_addr_from_ipv6 (&addr, ip, htons (53));
+    else
+        hev_socks5_addr_from_name (&addr, "example.org", htons (53));
     msg.addr = &addr;
     msg.buf = "x";
     msg.len = 1;
     assert (hev_socks5_udp_sendmmsg (HEV_SOCKS5_UDP (client), &msg, 1) == 1);
-    assert (read (fd[1], packet, sizeof (packet)) == 11);
-    assert (write (fd[1], packet, 11) == 11);
+    length = read (fd[1], packet, sizeof (packet));
+    assert (length > 0);
+    assert (write (fd[1], packet, length) == length);
     msg.addr = NULL;
     msg.buf = buf;
     msg.len = sizeof (buf);
     assert (hev_socks5_udp_recvmmsg (HEV_SOCKS5_UDP (client), &msg, 1, 0) == 1);
     assert (msg.len == 1 && *(char *)msg.buf == 'x');
+    assert (!memcmp (msg.addr, &addr, hev_socks5_addr_len (&addr)));
     expect_silent_failure ();
     hev_object_unref (HEV_OBJECT (client));
     close (fd[1]);
@@ -795,9 +803,15 @@ truncated_udp_tcp (int payload, int end)
 }
 
 static void
-invalid_udp_tcp_header (void)
+invalid_udp_tcp_header (int type)
 {
-    static const unsigned char packet[] = { 0, 1, 4, 1, 127 };
+    unsigned char packet[] = { 0, 1, 5, 4, 127, 42 };
+    if (type == 0)
+        packet[2] = 4;
+    else if (type == 1)
+        packet[3] = HEV_SOCKS5_ADDR_TYPE_IPV4;
+    else if (type == 2)
+        packet[3] = HEV_SOCKS5_ADDR_TYPE_NAME;
     HevSocks5ClientUDP *client;
     HevSocks5UDPMsg msg;
     char buf[1500];
@@ -1035,7 +1049,9 @@ regressions (const char *selected)
 #endif
     } else if (!strcmp (selected, "udp-tcp-truncated")) {
 #ifndef CORE_LEGACY_UDP
-        successful_udp_tcp ();
+        successful_udp_tcp (0);
+        successful_udp_tcp (1);
+        successful_udp_tcp (2);
         truncated_udp_tcp (0, 0);
         truncated_udp_tcp (0, 1);
         truncated_udp_tcp (0, 2);
@@ -1044,7 +1060,10 @@ regressions (const char *selected)
         truncated_udp_tcp (1, 1);
         truncated_udp_tcp (1, 2);
         truncated_udp_tcp (1, 3);
-        invalid_udp_tcp_header ();
+        invalid_udp_tcp_header (0);
+        invalid_udp_tcp_header (1);
+        invalid_udp_tcp_header (2);
+        invalid_udp_tcp_header (3);
         truncated_udp_tcp_second_frame ();
 #endif
     } else if (!strcmp (selected, "udp-tcp-short-write")) {
