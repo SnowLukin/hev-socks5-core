@@ -776,6 +776,7 @@ truncated_udp_tcp (int payload, int end)
     errno = EACCES;
     res = hev_socks5_udp_recvmmsg (HEV_SOCKS5_UDP (client), &msg, 1, 0);
     assert (res < 0);
+    assert (res != -1 || errno != EAGAIN);
     if (end == 3) {
         assert (!HEV_SOCKS5 (client)->timed_out);
         expect_silent_failure ();
@@ -791,6 +792,31 @@ truncated_udp_tcp (int payload, int end)
     hev_object_unref (HEV_OBJECT (client));
     if (end != 1)
         close (fd[1]);
+}
+
+static void
+invalid_udp_tcp_header (void)
+{
+    static const unsigned char packet[] = { 0, 1, 4, 1, 127 };
+    HevSocks5ClientUDP *client;
+    HevSocks5UDPMsg msg;
+    char buf[1500];
+    int fd[2], res;
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    HEV_SOCKS5 (client)->fd = fd[0];
+    assert (write (fd[1], packet, sizeof (packet)) == sizeof (packet));
+    msg.addr = NULL;
+    msg.buf = buf;
+    msg.len = sizeof (buf);
+    errno = EAGAIN;
+    res = hev_socks5_udp_recvmmsg (HEV_SOCKS5_UDP (client), &msg, 1, 1);
+    assert (res < 0 && (res != -1 || errno != EAGAIN));
+    expect_log ("target=udp-association", "reason=invalid UDP header length");
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
 }
 
 static void
@@ -1018,6 +1044,7 @@ regressions (const char *selected)
         truncated_udp_tcp (1, 1);
         truncated_udp_tcp (1, 2);
         truncated_udp_tcp (1, 3);
+        invalid_udp_tcp_header ();
         truncated_udp_tcp_second_frame ();
 #endif
     } else if (!strcmp (selected, "udp-tcp-short-write")) {

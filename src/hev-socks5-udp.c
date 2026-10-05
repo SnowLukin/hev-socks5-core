@@ -240,12 +240,13 @@ hev_socks5_udp_recvmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
                 break;
             if (res != -1 || errno != EAGAIN)
                 hev_socks5_udp_log_io_failure (self, "udp-read", res, errno);
-            return !received && res == 0 ? 0 : -1;
+            return res < 0 ? res : received ? -2 : 0;
         }
 
         if (udp.hdrlen < 5) {
             hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
                                     "invalid UDP header length", udp.hdrlen);
+            errno = EINVAL;
             return -1;
         }
 
@@ -255,6 +256,7 @@ hev_socks5_udp_recvmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
             udp.datlen > (msgv[i].len - addrlen)) {
             hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
                                     "invalid UDP length", udp.datlen);
+            errno = EINVAL;
             return -1;
         }
 
@@ -263,7 +265,7 @@ hev_socks5_udp_recvmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
                                           &received);
         if (res != 1) {
             hev_socks5_udp_log_io_failure (self, "udp-read", res, errno);
-            return -1;
+            return res < 0 ? res : -2;
         }
 
         msgv[i].addr = msgv[i].buf;
