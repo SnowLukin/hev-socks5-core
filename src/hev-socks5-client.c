@@ -96,7 +96,7 @@ hev_socks5_client_write_auth_methods (HevSocks5Client *self)
     res = hev_task_io_socket_send (HEV_SOCKS5 (self)->fd, &auth, 3,
                                    MSG_WAITALL | MSG_MORE, task_io_yielder,
                                    self);
-    if (res <= 0) {
+    if (res != 3) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-methods",
                                 res < 0 ? NULL : "incomplete write",
@@ -137,7 +137,7 @@ hev_socks5_client_write_auth_creds (HevSocks5Client *self)
     res = hev_task_io_socket_sendmsg (HEV_SOCKS5 (self)->fd, &mh,
                                       MSG_WAITALL | MSG_MORE, task_io_yielder,
                                       self);
-    if (res <= 0) {
+    if (res != 3 + ub[1] + ub[2]) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-creds",
                                 res < 0 ? NULL : "incomplete write",
@@ -213,7 +213,7 @@ hev_socks5_client_write_request (HevSocks5Client *self)
     mh.msg_iovlen = 2;
     ret = hev_task_io_socket_sendmsg (HEV_SOCKS5 (self)->fd, &mh, MSG_WAITALL,
                                       task_io_yielder, self);
-    if (ret <= 0) {
+    if (ret != 3 + addrlen) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-request",
                                 ret < 0 ? NULL : "incomplete write",

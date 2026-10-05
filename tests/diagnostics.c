@@ -704,6 +704,159 @@ recoverable_udp_send (void)
 }
 #else
 static void
+successful_udp_tcp (void)
+{
+    HevSocks5ClientUDP *client;
+    HevSocks5Addr addr;
+    HevSocks5UDPMsg msg;
+    unsigned char ip[4] = { 203, 0, 113, 9 };
+    unsigned char packet[32];
+    char buf[1500];
+    int fd[2];
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    HEV_SOCKS5 (client)->fd = fd[0];
+    hev_socks5_addr_from_ipv4 (&addr, ip, htons (53));
+    msg.addr = &addr;
+    msg.buf = "x";
+    msg.len = 1;
+    assert (hev_socks5_udp_sendmmsg (HEV_SOCKS5_UDP (client), &msg, 1) == 1);
+    assert (read (fd[1], packet, sizeof (packet)) == 11);
+    assert (write (fd[1], packet, 11) == 11);
+    msg.addr = NULL;
+    msg.buf = buf;
+    msg.len = sizeof (buf);
+    assert (hev_socks5_udp_recvmmsg (HEV_SOCKS5_UDP (client), &msg, 1, 0) == 1);
+    assert (msg.len == 1 && *(char *)msg.buf == 'x');
+    expect_silent_failure ();
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
+}
+
+static void
+truncated_udp_tcp (int payload, int end)
+{
+    static const unsigned char packet[] = {
+        0, 1, 10, 1, 127, 0, 0, 1, 0, 53, 42
+    };
+    HevSocks5ClientUDP *client;
+    HevSocks5UDPMsg msg;
+    HevTask *task;
+    char buf[1500];
+    int fd[2], res;
+    size_t length = payload ? 6 : end == 2 ? 2 : 1;
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
+    if (end == 1)
+        tcp_pair (fd);
+    else
+        assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    HEV_SOCKS5 (client)->fd = fd[0];
+    assert (!hev_task_add_fd (hev_task_self (), fd[0], POLLIN | POLLOUT));
+    assert (write (fd[1], packet, length) == (ssize_t)length);
+    if (end == 1) {
+        task = hev_task_new (16384);
+        hev_task_run (task, reset_peer, &fd[1]);
+    } else if (end == 2) {
+        hev_socks5_set_timeout (HEV_SOCKS5 (client), 15);
+    } else if (end == 3) {
+        task = hev_task_new (16384);
+        cancel_client = HEV_SOCKS5 (client);
+        waiting_task = hev_task_self ();
+        hev_task_run (task, cancel_wait, NULL);
+    } else {
+        shutdown (fd[1], SHUT_WR);
+    }
+    msg.addr = NULL;
+    msg.buf = buf;
+    msg.len = sizeof (buf);
+    errno = EACCES;
+    res = hev_socks5_udp_recvmmsg (HEV_SOCKS5_UDP (client), &msg, 1, 0);
+    assert (res < 0);
+    if (end == 3) {
+        assert (!HEV_SOCKS5 (client)->timed_out);
+        expect_silent_failure ();
+    } else {
+        expect_log ("target=udp-association",
+                    end == 2 ? "operation=udp-read reason=timeout" :
+                    end == 1 ? strerror (ECONNRESET) :
+                               "operation=udp-read reason=unexpected EOF code=0");
+        assert (!strstr (log_text, strerror (EACCES)));
+    }
+    if (end == 2)
+        assert (HEV_SOCKS5 (client)->timed_out);
+    hev_object_unref (HEV_OBJECT (client));
+    if (end != 1)
+        close (fd[1]);
+}
+
+static void
+truncated_udp_tcp_second_frame (void)
+{
+    static const unsigned char packet[] = {
+        0, 1, 10, 1, 127, 0, 0, 1, 0, 53, 42, 0
+    };
+    HevSocks5ClientUDP *client;
+    HevSocks5UDPMsg batch[2];
+    char buffers[2][1500];
+    int fd[2], i;
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    HEV_SOCKS5 (client)->fd = fd[0];
+    assert (write (fd[1], packet, sizeof (packet)) == sizeof (packet));
+    shutdown (fd[1], SHUT_WR);
+    for (i = 0; i < 2; i++) {
+        batch[i].addr = NULL;
+        batch[i].buf = buffers[i];
+        batch[i].len = sizeof (buffers[i]);
+    }
+    assert (hev_socks5_udp_recvmmsg (HEV_SOCKS5_UDP (client), batch, 2, 0) < 0);
+    expect_log ("target=udp-association",
+                "operation=udp-read reason=unexpected EOF code=0");
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
+}
+
+static void
+partial_udp_tcp_write (void)
+{
+    HevSocks5ClientUDP *client;
+    HevSocks5Addr addr;
+    unsigned char ip[4] = { 203, 0, 113, 9 };
+    HevSocks5UDPMsg batch[64];
+    char payload[4096] = { 0 };
+    int fd[2], size = 4096, i, res;
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    HEV_SOCKS5 (client)->fd = fd[0];
+    hev_socks5_set_timeout (HEV_SOCKS5 (client), 15);
+    assert (!hev_task_add_fd (hev_task_self (), fd[0], POLLIN | POLLOUT));
+    assert (!setsockopt (fd[0], SOL_SOCKET, SO_SNDBUF, &size, sizeof (size)));
+    assert (!setsockopt (fd[1], SOL_SOCKET, SO_RCVBUF, &size, sizeof (size)));
+    hev_socks5_addr_from_ipv4 (&addr, ip, htons (53));
+    for (i = 0; i < 64; i++) {
+        batch[i].addr = &addr;
+        batch[i].buf = payload;
+        batch[i].len = sizeof (payload);
+    }
+    errno = EACCES;
+    res = hev_socks5_udp_sendmmsg (HEV_SOCKS5_UDP (client), batch, 64);
+    assert (res < 0);
+    assert (HEV_SOCKS5 (client)->timed_out);
+    expect_log ("target=udp-association", "operation=udp-write reason=timeout");
+    assert (!strstr (log_text, strerror (EACCES)));
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
+}
+
+static void
 partial_udp_batch (int receive)
 {
     HevSocks5ClientUDP *client;
@@ -854,6 +1007,23 @@ regressions (const char *selected)
         partial_udp_batch (0);
         partial_udp_batch (1);
 #endif
+    } else if (!strcmp (selected, "udp-tcp-truncated")) {
+#ifndef CORE_LEGACY_UDP
+        successful_udp_tcp ();
+        truncated_udp_tcp (0, 0);
+        truncated_udp_tcp (0, 1);
+        truncated_udp_tcp (0, 2);
+        truncated_udp_tcp (0, 3);
+        truncated_udp_tcp (1, 0);
+        truncated_udp_tcp (1, 1);
+        truncated_udp_tcp (1, 2);
+        truncated_udp_tcp (1, 3);
+        truncated_udp_tcp_second_frame ();
+#endif
+    } else if (!strcmp (selected, "udp-tcp-short-write")) {
+#ifndef CORE_LEGACY_UDP
+        partial_udp_tcp_write ();
+#endif
     } else {
         assert (!"unknown regression");
     }
@@ -926,6 +1096,8 @@ run (void *data)
     regressions ("empty-udp");
     regressions ("udp-splice");
     regressions ("udp-progress");
+    regressions ("udp-tcp-truncated");
+    regressions ("udp-tcp-short-write");
     puts (
         "PASS core diagnostics: handshake, retained targets, errno, timeout, cancellation, deduplication, UDP");
 }

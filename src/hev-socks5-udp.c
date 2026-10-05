@@ -65,6 +65,28 @@ hev_socks5_udp_log_io_failure (HevSocks5UDP *self, const char *operation,
     }
 }
 
+static int
+hev_socks5_udp_read_exact (HevSocks5UDP *self, int fd, void *buf, size_t len,
+                           int flags, size_t *received)
+{
+    size_t offset = 0;
+
+    while (offset < len) {
+        int res = hev_task_io_socket_recv (fd, (char *)buf + offset,
+                                           len - offset, flags, task_io_yielder,
+                                           self);
+        if (res <= 0) {
+            *received = offset;
+            return res;
+        }
+        offset += res;
+        flags = 0;
+    }
+
+    *received = offset;
+    return 1;
+}
+
 int
 hev_socks5_udp_get_fd (HevSocks5UDP *self)
 {
@@ -81,6 +103,7 @@ hev_socks5_udp_sendmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
     struct iovec iov[num * 3];
     HevSocks5UDPHdr udp[num];
     struct msghdr mh;
+    size_t length = 0;
     int i, res;
 
     mh.msg_name = NULL;
@@ -109,12 +132,22 @@ hev_socks5_udp_sendmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
         iov[i * 3 + 1].iov_len = addrlen;
         iov[i * 3 + 2].iov_base = msgv[i].buf;
         iov[i * 3 + 2].iov_len = msgv[i].len;
+        length += 3 + addrlen + msgv[i].len;
     }
 
     res = hev_task_io_socket_sendmsg (hev_socks5_udp_get_fd (self), &mh,
                                       MSG_WAITALL, task_io_yielder, self);
-    if (res <= 0) {
-        hev_socks5_udp_log_io_failure (self, "udp-write", res, errno);
+    if (res != length) {
+        int error_code = errno;
+        if (res <= 0)
+            hev_socks5_udp_log_io_failure (self, "udp-write", res, error_code);
+        else if (error_code && error_code != EAGAIN &&
+                 error_code != EWOULDBLOCK)
+            hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-write", NULL,
+                                    error_code);
+        else
+            hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-write",
+                                    "incomplete write", 0);
         return -1;
     }
 
@@ -196,22 +229,18 @@ hev_socks5_udp_recvmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
 
     for (i = 0; i < num; i++) {
         HevSocks5UDPHdr udp;
-        struct iovec iov[2];
-        struct msghdr mh;
         int addrlen;
         int res;
+        size_t received;
 
-        res = hev_task_io_socket_recv (fd, &udp, 5, nonblock, task_io_yielder,
-                                       self);
-        if (res > 0 && res < 5)
-            res += hev_task_io_socket_recv (fd, (void *)&udp + res, 5 - res,
-                                            MSG_WAITALL, task_io_yielder, self);
-        if (res != 5) {
-            if (rlen > 0)
+        res = hev_socks5_udp_read_exact (self, fd, &udp, 5, nonblock,
+                                          &received);
+        if (res != 1) {
+            if (!received && rlen > 0)
                 break;
             if (res != -1 || errno != EAGAIN)
                 hev_socks5_udp_log_io_failure (self, "udp-read", res, errno);
-            return res;
+            return !received && res == 0 ? 0 : -1;
         }
 
         if (udp.hdrlen < 5) {
@@ -222,33 +251,23 @@ hev_socks5_udp_recvmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
 
         addrlen = udp.hdrlen - 3;
         udp.datlen = ntohs (udp.datlen);
-        if (udp.datlen > (msgv[i].len - addrlen)) {
+        if (addrlen > msgv[i].len ||
+            udp.datlen > (msgv[i].len - addrlen)) {
             hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
                                     "invalid UDP length", udp.datlen);
             return -1;
         }
 
-        mh.msg_name = NULL;
-        mh.msg_namelen = 0;
-        mh.msg_control = NULL;
-        mh.msg_controllen = 0;
-        mh.msg_iov = iov;
-        mh.msg_iovlen = 2;
-
-        iov[0].iov_base = msgv[i].buf + 2;
-        iov[0].iov_len = addrlen - 2;
-        iov[1].iov_base = msgv[i].buf + addrlen;
-        iov[1].iov_len = udp.datlen;
-
-        res = hev_task_io_socket_recvmsg (fd, &mh, MSG_WAITALL, task_io_yielder,
-                                          self);
-        if (res != (addrlen - 2 + udp.datlen)) {
+        res = hev_socks5_udp_read_exact (self, fd, (char *)msgv[i].buf + 2,
+                                          addrlen - 2 + udp.datlen, 0,
+                                          &received);
+        if (res != 1) {
             hev_socks5_udp_log_io_failure (self, "udp-read", res, errno);
-            return res;
+            return -1;
         }
 
         msgv[i].addr = msgv[i].buf;
-        msgv[i].buf = iov[1].iov_base;
+        msgv[i].buf = (char *)msgv[i].buf + addrlen;
         msgv[i].len = udp.datlen;
         msgv[i].addr->atype = udp.addr.atype;
         msgv[i].addr->domain.len = udp.addr.domain.len;
