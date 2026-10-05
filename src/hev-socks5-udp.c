@@ -97,6 +97,9 @@ hev_socks5_udp_sendto (HevSocks5UDP *self, const void *buf, size_t len,
 
     LOG_D ("%p socks5 udp sendto", self);
 
+    if (!hev_socks5_get_timeout (HEV_SOCKS5 (self)))
+        return -2;
+    HEV_SOCKS5 (self)->timed_out = 0;
     addrlen = hev_socks5_addr_len (addr);
     if (addrlen <= 0) {
         if (HEV_SOCKS5 (self)->type == HEV_SOCKS5_TYPE_UDP_IN_TCP)
@@ -130,7 +133,6 @@ hev_socks5_udp_sendto (HevSocks5UDP *self, const void *buf, size_t len,
     iov[2].iov_base = (void *)buf;
     iov[2].iov_len = len;
 
-    HEV_SOCKS5 (self)->timed_out = 0;
     res = hev_task_io_socket_sendmsg (hev_socks5_udp_get_fd (self), &mh,
                                       MSG_WAITALL, task_io_yielder, self);
     if (HEV_SOCKS5 (self)->type == HEV_SOCKS5_TYPE_UDP_IN_TCP &&
@@ -299,6 +301,8 @@ hev_socks5_udp_recvfrom (HevSocks5UDP *self, void *buf, size_t len,
 {
     int res;
 
+    if (!hev_socks5_get_timeout (HEV_SOCKS5 (self)))
+        return -2;
     HEV_SOCKS5 (self)->timed_out = 0;
     switch (HEV_SOCKS5 (self)->type) {
     case HEV_SOCKS5_TYPE_UDP_IN_TCP:

@@ -923,6 +923,30 @@ legacy_timeout_progress (void)
 }
 
 static void
+legacy_timeout_validation (void)
+{
+    HevSocks5ClientUDP *client;
+    HevSocks5Addr addr = { .atype = 99 };
+    char payload[8];
+    int fd[2];
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    HEV_SOCKS5 (client)->fd = fd[0];
+    hev_socks5_set_timeout (HEV_SOCKS5 (client), 15);
+    assert (!hev_task_add_fd (hev_task_self (), fd[0], POLLIN | POLLOUT));
+    assert (hev_socks5_udp_recvfrom (HEV_SOCKS5_UDP (client), payload,
+                                     sizeof (payload), &addr) == -2);
+    addr.atype = 99;
+    assert (hev_socks5_udp_sendto (HEV_SOCKS5_UDP (client), payload, 1,
+                                   &addr) < 0);
+    expect_log ("target=udp-association", "reason=invalid UDP address code=99");
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
+}
+
+static void
 legacy_stream_send_timeout (void)
 {
     HevSocks5ClientUDP *client;
@@ -944,6 +968,11 @@ legacy_stream_send_timeout (void)
                                    sizeof (payload), &addr) < 0);
     assert (!ioctl (fd[1], FIONREAD, &available) && available > 0);
     assert (hev_socks5_get_timeout (HEV_SOCKS5 (client)) == 0);
+    while (read (fd[1], payload, sizeof (payload)) > 0)
+        ;
+    assert (hev_socks5_udp_sendto (HEV_SOCKS5_UDP (client), payload, 1,
+                                   &addr) < 0);
+    assert (!ioctl (fd[1], FIONREAD, &available) && available == 0);
     expect_log ("target=udp-association", "operation=udp-write reason=timeout");
     hev_object_unref (HEV_OBJECT (client));
     close (fd[1]);
@@ -1028,6 +1057,7 @@ regressions (const char *selected)
     } else if (!strcmp (selected, "udp-resume")) {
 #ifdef CORE_LEGACY_UDP
         legacy_timeout_progress ();
+        legacy_timeout_validation ();
 #endif
     } else {
         assert (!"unknown regression");
