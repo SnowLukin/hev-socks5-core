@@ -860,6 +860,39 @@ legacy_short_frame (int tcp, size_t size, int timeout)
 }
 
 static void
+legacy_complete_frames (void)
+{
+    static const unsigned char packet[] = {
+        0, 1, 10, 1, 127, 0, 0, 1, 0, 53, 'x',
+        0, 0, 10, 1, 127, 0, 0, 1, 0, 53,
+        0, 1, 10, 1, 127, 0, 0, 1, 0, 53, 'y'
+    };
+    HevSocks5ClientUDP *client;
+    HevSocks5Addr addr;
+    unsigned char payload[8];
+    int fd[2];
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    HEV_SOCKS5 (client)->fd = fd[0];
+    assert (write (fd[1], packet, sizeof (packet)) == sizeof (packet));
+    assert (hev_socks5_udp_recvfrom (HEV_SOCKS5_UDP (client), payload,
+                                     sizeof (payload), &addr) == 1);
+    assert (payload[0] == 'x');
+    assert (addr.atype == HEV_SOCKS5_ADDR_TYPE_IPV4);
+    assert (addr.ipv4.port == htons (53));
+    assert (hev_socks5_udp_recvfrom (HEV_SOCKS5_UDP (client), payload,
+                                     sizeof (payload), &addr) == 0);
+    assert (hev_socks5_udp_recvfrom (HEV_SOCKS5_UDP (client), payload,
+                                     sizeof (payload), &addr) == 1);
+    assert (payload[0] == 'y');
+    expect_silent_failure ();
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
+}
+
+static void
 legacy_timeout_progress (void)
 {
     static const unsigned char packet[] = { 0, 0, 0, 1, 127, 0,
@@ -981,6 +1014,7 @@ regressions (const char *selected)
     } else if (!strcmp (selected, "udp-framing")) {
 #ifdef CORE_LEGACY_UDP
         int i;
+        legacy_complete_frames ();
         for (i = 1; i <= 3; i++)
             legacy_short_frame (0, i, 0);
         legacy_short_frame (1, 1, 0);
