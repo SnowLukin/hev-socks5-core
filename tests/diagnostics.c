@@ -820,6 +820,130 @@ terminal_udp_send (void)
 }
 #endif
 
+#ifdef CORE_LEGACY_UDP
+static void
+legacy_short_frame (int tcp, size_t size, int timeout)
+{
+    static const unsigned char packet[] = { 0, 4, 10, 1, 127, 0,
+                                            0, 1, 0, 53, 'x' };
+    HevSocks5ClientUDP *client;
+    HevSocks5Addr addr;
+    char payload[64];
+    int fd[2], res;
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (tcp ? HEV_SOCKS5_TYPE_UDP_IN_TCP :
+                                            HEV_SOCKS5_TYPE_UDP_IN_UDP);
+    assert (!hev_task_io_socket_socketpair (
+        AF_UNIX, tcp ? SOCK_STREAM : SOCK_DGRAM, 0, fd));
+    if (tcp)
+        HEV_SOCKS5 (client)->fd = fd[0];
+    else
+        client->fd = fd[0];
+    HEV_SOCKS5 (client)->udp_associated = 1;
+    hev_socks5_set_timeout (HEV_SOCKS5 (client), 15);
+    assert (!hev_task_add_fd (hev_task_self (), fd[0], POLLIN));
+    assert (write (fd[1], packet, size) == (ssize_t)size);
+    if (tcp && !timeout)
+        shutdown (fd[1], SHUT_WR);
+    memset (&addr, 0x5a, sizeof (addr));
+    memset (payload, 0x5a, sizeof (payload));
+    res = hev_socks5_udp_recvfrom (HEV_SOCKS5_UDP (client), payload,
+                                   sizeof (payload), &addr);
+    assert (res < 0);
+    if (timeout)
+        assert (hev_socks5_get_timeout (HEV_SOCKS5 (client)) == 0);
+    expect_log ("target=udp-association",
+                timeout ? "reason=timeout" : "operation=udp-read");
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
+}
+
+static void
+legacy_timeout_progress (void)
+{
+    static const unsigned char packet[] = { 0, 0, 0, 1, 127, 0,
+                                            0, 1, 0, 53, 'x' };
+    HevSocks5ClientUDP *client;
+    int fd[2], control[2];
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_UDP);
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_DGRAM, 0, fd));
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, control));
+    client->fd = fd[0];
+    HEV_SOCKS5 (client)->fd = control[0];
+    HEV_SOCKS5 (client)->udp_associated = 1;
+    hev_socks5_set_timeout (HEV_SOCKS5 (client), 15);
+    assert (!hev_task_add_fd (hev_task_self (), fd[0], POLLIN));
+    assert (udp_receive (client) == -2);
+    assert (!HEV_SOCKS5 (client)->failure_logged);
+    assert (write (fd[1], packet, sizeof (packet)) == sizeof (packet));
+    assert (udp_receive (client) == 1);
+    shutdown (control[1], SHUT_WR);
+    assert (udp_receive (client) < 0);
+    expect_log ("target=udp-association", "reason=unexpected EOF code=0");
+    assert (!strstr (log_text, "reason=timeout"));
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
+    close (control[1]);
+}
+
+static void
+legacy_stream_send_timeout (void)
+{
+    HevSocks5ClientUDP *client;
+    HevSocks5Addr addr;
+    unsigned char ip[4] = { 203, 0, 113, 9 };
+    char payload[60000] = { 0 };
+    int fd[2], size = 4096, available;
+
+    begin_log ();
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_TCP);
+    assert (!hev_task_io_socket_socketpair (AF_UNIX, SOCK_STREAM, 0, fd));
+    HEV_SOCKS5 (client)->fd = fd[0];
+    hev_socks5_set_timeout (HEV_SOCKS5 (client), 15);
+    assert (!hev_task_add_fd (hev_task_self (), fd[0], POLLOUT));
+    assert (!setsockopt (fd[0], SOL_SOCKET, SO_SNDBUF, &size, sizeof (size)));
+    assert (!setsockopt (fd[1], SOL_SOCKET, SO_RCVBUF, &size, sizeof (size)));
+    hev_socks5_addr_from_ipv4 (&addr, ip, htons (53));
+    assert (hev_socks5_udp_sendto (HEV_SOCKS5_UDP (client), payload,
+                                   sizeof (payload), &addr) < 0);
+    assert (!ioctl (fd[1], FIONREAD, &available) && available > 0);
+    assert (hev_socks5_get_timeout (HEV_SOCKS5 (client)) == 0);
+    expect_log ("target=udp-association", "operation=udp-write reason=timeout");
+    hev_object_unref (HEV_OBJECT (client));
+    close (fd[1]);
+}
+#endif
+
+static void
+warning_level_failure (void)
+{
+    HevSocks5ClientTCP *client;
+
+    begin_log ();
+    hev_socks5_logger_fini ();
+    assert (!hev_socks5_logger_init (HEV_SOCKS5_LOGGER_WARN, log_path));
+    client = new_client (0);
+    hev_socks5_client_set_auth (HEV_SOCKS5_CLIENT (client), "private-user",
+                                "private-password");
+    assert (hev_socks5_client_handshake (HEV_SOCKS5_CLIENT (client), 0) < 0);
+    expect_log ("socks5 failure", "operation=handshake");
+    assert (!strstr (log_text, "target="));
+    assert (!strstr (log_text, "203.0.113.9"));
+    hev_object_unref (HEV_OBJECT (client));
+
+    begin_log ();
+    hev_socks5_logger_fini ();
+    assert (!hev_socks5_logger_init (HEV_SOCKS5_LOGGER_WARN, log_path));
+    client = new_client (0);
+    hev_socks5_set_timeout (HEV_SOCKS5 (client), 0);
+    assert (hev_socks5_client_handshake (HEV_SOCKS5_CLIENT (client), 0) < 0);
+    expect_silent_failure ();
+    hev_object_unref (HEV_OBJECT (client));
+}
+
 static void
 regressions (const char *selected)
 {
@@ -854,6 +978,23 @@ regressions (const char *selected)
         partial_udp_batch (0);
         partial_udp_batch (1);
 #endif
+    } else if (!strcmp (selected, "udp-framing")) {
+#ifdef CORE_LEGACY_UDP
+        int i;
+        for (i = 1; i <= 3; i++)
+            legacy_short_frame (0, i, 0);
+        legacy_short_frame (1, 1, 0);
+        legacy_short_frame (1, 3, 0);
+        legacy_short_frame (1, 5, 0);
+        legacy_short_frame (1, 11, 0);
+        legacy_short_frame (1, 1, 1);
+        legacy_short_frame (1, 11, 1);
+        legacy_stream_send_timeout ();
+#endif
+    } else if (!strcmp (selected, "udp-resume")) {
+#ifdef CORE_LEGACY_UDP
+        legacy_timeout_progress ();
+#endif
     } else {
         assert (!"unknown regression");
     }
@@ -881,6 +1022,11 @@ run (void *data)
                               "address type not supported" };
     int i, pipeline;
     (void)data;
+    if (getenv ("REGRESSION") &&
+        !strcmp (getenv ("REGRESSION"), "warning-level")) {
+        warning_level_failure ();
+        return;
+    }
     if (getenv ("REGRESSION")) {
         regressions (getenv ("REGRESSION"));
         return;
@@ -909,6 +1055,7 @@ run (void *data)
     response[3] = 99;
     handshake_case (response, sizeof (response),
                     "reason=unknown SOCKS5 reply code=99", 0, 0);
+    warning_level_failure ();
     successful_handshake (0, 0);
     successful_handshake (1, 1);
     successful_udp ();
@@ -926,6 +1073,8 @@ run (void *data)
     regressions ("empty-udp");
     regressions ("udp-splice");
     regressions ("udp-progress");
+    regressions ("udp-framing");
+    regressions ("udp-resume");
     puts (
         "PASS core diagnostics: handshake, retained targets, errno, timeout, cancellation, deduplication, UDP");
 }

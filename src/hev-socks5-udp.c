@@ -130,12 +130,57 @@ hev_socks5_udp_sendto (HevSocks5UDP *self, const void *buf, size_t len,
     iov[2].iov_base = (void *)buf;
     iov[2].iov_len = len;
 
+    HEV_SOCKS5 (self)->timed_out = 0;
     res = hev_task_io_socket_sendmsg (hev_socks5_udp_get_fd (self), &mh,
                                       MSG_WAITALL, task_io_yielder, self);
-    if (res <= 0 && HEV_SOCKS5 (self)->type == HEV_SOCKS5_TYPE_UDP_IN_TCP)
-        hev_socks5_udp_log_io_failure (self, "udp-write", res, errno);
+    if (HEV_SOCKS5 (self)->type == HEV_SOCKS5_TYPE_UDP_IN_TCP &&
+        res != 3 + addrlen + len) {
+        int error_code = errno;
+        const char *reason = NULL;
+        if (res >= 0 && (!error_code || error_code == EAGAIN ||
+                         error_code == EWOULDBLOCK))
+            reason = "incomplete write";
+        hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-write", reason,
+                                error_code);
+        /* A retry could append a new header inside the unfinished frame. */
+        hev_socks5_set_timeout (HEV_SOCKS5 (self), 0);
+        return -1;
+    }
+    if (res > 0)
+        HEV_SOCKS5 (self)->timed_out = 0;
 
     return res;
+}
+
+static int
+hev_socks5_udp_read_exact (HevSocks5UDP *self, void *buf, size_t len,
+                           size_t *received)
+{
+    size_t offset = 0;
+
+    while (offset < len) {
+        int res;
+        int error_code;
+
+        res = hev_task_io_socket_recv (hev_socks5_udp_get_fd (self),
+                                       (char *)buf + offset, len - offset, 0,
+                                       task_io_yielder, self);
+        error_code = errno;
+        if (res <= 0) {
+            if (res != -2 || *received) {
+                hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
+                                        res < 0 ? NULL : "unexpected EOF",
+                                        res < 0 ? error_code : 0);
+                /* Only an idle timeout before a frame can be retried. */
+                hev_socks5_set_timeout (HEV_SOCKS5 (self), 0);
+                return -1;
+            }
+            return res;
+        }
+        offset += res;
+        *received += res;
+    }
+    return 0;
 }
 
 static int
@@ -143,47 +188,34 @@ hev_socks5_udp_recvfrom_tcp (HevSocks5UDP *self, void *buf, size_t len,
                              HevSocks5Addr *addr)
 {
     HevSocks5UDPHdr udp;
-    struct iovec iov[2];
-    struct msghdr mh;
+    size_t received = 0;
+    int addrlen;
     int res;
-    int fd;
 
     LOG_D ("%p socks5 udp recvfrom tcp", self);
 
-    fd = hev_socks5_udp_get_fd (self);
-    res = hev_task_io_socket_recv (fd, &udp, 5, MSG_WAITALL, task_io_yielder,
-                                   self);
-    if (res <= 0) {
-        hev_socks5_udp_log_io_failure (self, "udp-read", res, errno);
+    res = hev_socks5_udp_read_exact (self, &udp, 5, &received);
+    if (res < 0)
         return res;
-    }
 
     udp.datlen = ntohs (udp.datlen);
-    if (udp.datlen > len) {
+    addrlen = hev_socks5_addr_len (&udp.addr);
+    if (addrlen <= 0 || udp.hdrlen != 3 + addrlen || udp.datlen > len) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
                                 "invalid UDP length", udp.datlen);
+        hev_socks5_set_timeout (HEV_SOCKS5 (self), 0);
         return -1;
     }
 
-    memset (&mh, 0, sizeof (mh));
-    mh.msg_iov = iov;
-    mh.msg_iovlen = 2;
-
-    iov[0].iov_base = &addr->domain.addr;
-    iov[0].iov_len = udp.hdrlen - 5;
-    iov[1].iov_base = buf;
-    iov[1].iov_len = udp.datlen;
-
-    res = hev_task_io_socket_recvmsg (fd, &mh, MSG_WAITALL, task_io_yielder,
-                                      self);
-    if (res <= 0) {
-        hev_socks5_udp_log_io_failure (self, "udp-read", res, errno);
+    res = hev_socks5_udp_read_exact (self, &udp.addr.domain.addr,
+                                     addrlen - 2, &received);
+    if (res < 0)
         return res;
-    }
+    res = hev_socks5_udp_read_exact (self, buf, udp.datlen, &received);
+    if (res < 0)
+        return res;
 
-    addr->atype = udp.addr.atype;
-    addr->domain.len = udp.addr.domain.len;
-
+    memcpy (addr, &udp.addr, addrlen);
     return udp.datlen;
 }
 
@@ -214,8 +246,12 @@ hev_socks5_udp_recvfrom_udp (HevSocks5UDP *self, void *buf, size_t len,
     rlen = hev_task_io_socket_recvfrom (fd, rbuf, sizeof (rbuf), 0, saddr,
                                         &alen, task_io_yielder, self);
     if (rlen < 4) {
-        hev_socks5_udp_log_io_failure (self, "udp-read", rlen, errno);
-        return rlen;
+        if (rlen > 0)
+            hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
+                                    "invalid UDP length", rlen);
+        else
+            hev_socks5_udp_log_io_failure (self, "udp-read", rlen, errno);
+        return rlen > 0 ? -1 : rlen;
     }
 
     if (saddr) {
@@ -229,6 +265,11 @@ hev_socks5_udp_recvfrom_udp (HevSocks5UDP *self, void *buf, size_t len,
     }
 
     udp = (HevSocks5UDPHdr *)rbuf;
+    if (udp->addr.atype == HEV_SOCKS5_ADDR_TYPE_NAME && rlen < 5) {
+        hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-read",
+                                "invalid UDP length", rlen);
+        return -1;
+    }
     addrlen = hev_socks5_addr_len (&udp->addr);
     if (addrlen <= 0) {
         hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-address",
@@ -258,6 +299,7 @@ hev_socks5_udp_recvfrom (HevSocks5UDP *self, void *buf, size_t len,
 {
     int res;
 
+    HEV_SOCKS5 (self)->timed_out = 0;
     switch (HEV_SOCKS5 (self)->type) {
     case HEV_SOCKS5_TYPE_UDP_IN_TCP:
         res = hev_socks5_udp_recvfrom_tcp (self, buf, len, addr);

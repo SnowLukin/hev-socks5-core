@@ -149,7 +149,7 @@ hev_socks5_client_write_auth_methods (HevSocks5Client *self)
 
     res = hev_task_io_socket_send (HEV_SOCKS5 (self)->fd, &auth, 3, MSG_WAITALL,
                                    task_io_yielder, self);
-    if (res <= 0) {
+    if (res != 3) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-methods",
                                 res < 0 ? NULL : "incomplete write",
@@ -189,7 +189,7 @@ hev_socks5_client_write_auth_creds (HevSocks5Client *self)
     mh.msg_iovlen = 4;
     res = hev_task_io_socket_sendmsg (HEV_SOCKS5 (self)->fd, &mh, MSG_WAITALL,
                                       task_io_yielder, self);
-    if (res <= 0) {
+    if (res != 3 + ub[1] + ub[2]) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-creds",
                                 res < 0 ? NULL : "incomplete write",
@@ -265,7 +265,7 @@ hev_socks5_client_write_request (HevSocks5Client *self)
     mh.msg_iovlen = 2;
     ret = hev_task_io_socket_sendmsg (HEV_SOCKS5 (self)->fd, &mh, MSG_WAITALL,
                                       task_io_yielder, self);
-    if (ret <= 0) {
+    if (ret != 3 + addrlen) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-request",
                                 ret < 0 ? NULL : "incomplete write",
@@ -393,8 +393,11 @@ hev_socks5_client_connect (HevSocks5Client *self, const char *addr, int port)
     LOG_D ("%p socks5 client connect [%s]:%d", self, addr, port);
 
     res = hev_socks5_client_connect_server (self, addr, port);
-    if (res < 0)
+    if (res < 0) {
+        if (!LOG_ON_I () && HEV_SOCKS5 (self)->timeout != 0)
+            LOG_E ("%p socks5 failure operation=proxy-connect", self);
         return -1;
+    }
 
     return 0;
 }
@@ -482,10 +485,15 @@ hev_socks5_client_handshake_pipeline (HevSocks5Client *self)
 int
 hev_socks5_client_handshake (HevSocks5Client *self, int pipeline)
 {
-    if (pipeline)
-        return hev_socks5_client_handshake_pipeline (self);
+    int res;
 
-    return hev_socks5_client_handshake_standard (self);
+    if (pipeline)
+        res = hev_socks5_client_handshake_pipeline (self);
+    else
+        res = hev_socks5_client_handshake_standard (self);
+    if (res < 0 && !LOG_ON_I () && HEV_SOCKS5 (self)->timeout != 0)
+        LOG_E ("%p socks5 failure operation=handshake", self);
+    return res;
 }
 
 void

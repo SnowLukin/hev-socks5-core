@@ -179,13 +179,13 @@ hev_socks5_server_read_auth_user (HevSocks5Server *self)
 
     user = hev_socks5_authenticator_get (self->auth, (char *)name, nlen);
     if (!user) {
-        LOG_E ("%p socks5 server auth user: %s pass: %s", self, name, pass);
+        LOG_E ("%p socks5 server authentication rejected", self);
         return -1;
     }
 
     res = hev_socks5_user_check (user, (char *)pass, plen);
     if (res < 0) {
-        LOG_E ("%p socks5 server auth user: %s pass: %s", self, name, pass);
+        LOG_E ("%p socks5 server authentication rejected", self);
         return -1;
     }
 
