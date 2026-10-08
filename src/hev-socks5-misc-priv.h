@@ -24,9 +24,6 @@ extern "C" {
 
 int hev_socks5_socket (int type);
 
-const char *hev_socks5_addr_into_str (const HevSocks5Addr *addr, char *buf,
-                                      int len);
-
 int hev_socks5_get_task_stack_size (void);
 
 #ifdef __cplusplus
