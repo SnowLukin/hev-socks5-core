@@ -173,16 +173,13 @@ hev_socks5_server_read_auth_user (HevSocks5Server *self)
 
     user = hev_socks5_authenticator_get (self->auth, (char *)name, nlen);
     if (!user) {
-        name[nlen] = '\0';
-        LOG_I ("%p socks5 server auth user: %s", self, name);
+        LOG_I ("%p socks5 server unknown auth user", self);
         return -1;
     }
 
     res = hev_socks5_user_check (user, (char *)pass, plen);
     if (res < 0) {
-        name[nlen] = '\0';
-        pass[plen] = '\0';
-        LOG_I ("%p socks5 server auth user: %s pass: %s", self, name, pass);
+        LOG_I ("%p socks5 server invalid auth password", self);
         return -1;
     }
 
@@ -380,7 +377,11 @@ hev_socks5_server_connect (HevSocks5Server *self, struct sockaddr_in6 *addr)
     res = hev_task_io_socket_connect (fd, (struct sockaddr *)addr,
                                       sizeof (*addr), task_io_yielder, self);
     if (res < 0) {
-        LOG_I ("%p socks5 server connect", self);
+        if (HEV_SOCKS5 (self)->timed_out)
+            hev_socks5_log_failure (HEV_SOCKS5 (self), "server-connect",
+                                    "timeout", 0);
+        else
+            LOG_I ("%p socks5 server connect", self);
         hev_task_del_fd (hev_task_self (), fd);
         close (fd);
         return -1;
@@ -570,8 +571,12 @@ hev_socks5_server_run (HevSocks5Server *self)
         hev_task_mod_fd (task, fd, POLLIN | POLLOUT);
 
     res = hev_socks5_server_handshake (self);
-    if (res < 0)
+    if (res < 0) {
+        if (HEV_SOCKS5 (self)->timed_out)
+            hev_socks5_log_failure (HEV_SOCKS5 (self), "server-handshake",
+                                    "timeout", 0);
         return -1;
+    }
 
     res = hev_socks5_server_service (self);
     if (res < 0)

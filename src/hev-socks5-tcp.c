@@ -33,6 +33,8 @@ hev_socks5_tcp_splicer (HevSocks5TCP *self, int fd)
         hev_task_mod_fd (task, fd, POLLIN | POLLOUT);
 
     hev_task_io_splice (cfd, cfd, fd, fd, 8192, task_io_yielder, self);
+    if (HEV_SOCKS5 (self)->timed_out)
+        hev_socks5_log_failure (HEV_SOCKS5 (self), "tcp-relay", "timeout", 0);
 
     return 0;
 }
