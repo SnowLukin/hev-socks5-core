@@ -50,6 +50,9 @@ struct _HevSocks5
     int fd;
     int timeout;
     int udp_associated;
+    unsigned int timed_out : 1;
+    unsigned int failure_logged : 1;
+    char diagnostic_target[272];
     HevSocks5Type type;
     HevSocks5AddrFamily addr_family;
 };
@@ -64,6 +67,10 @@ struct _HevSocks5Class
 HevObjectClass *hev_socks5_class (void);
 
 int hev_socks5_construct (HevSocks5 *self, HevSocks5Type type);
+
+void hev_socks5_set_diagnostic_target (HevSocks5 *self, const char *target);
+void hev_socks5_log_failure (HevSocks5 *self, const char *operation,
+                             const char *reason, int error_code);
 
 int hev_socks5_get_timeout (HevSocks5 *self);
 void hev_socks5_set_timeout (HevSocks5 *self, int timeout);
