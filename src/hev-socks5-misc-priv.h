@@ -24,9 +24,6 @@ extern "C" {
 
 int hev_socks5_socket (int type);
 
-const char *hev_socks5_addr_into_str (const HevSocks5Addr *addr, char *buf,
-                                      int len);
-
 int hev_socks5_get_connect_timeout (void);
 int hev_socks5_get_tcp_timeout (void);
 int hev_socks5_get_udp_timeout (void);

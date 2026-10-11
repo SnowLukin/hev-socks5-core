@@ -7,6 +7,7 @@
  ============================================================================
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -37,6 +38,9 @@ hev_socks5_task_io_yielder (HevTaskYieldType type, void *data)
 {
     HevSocks5 *self = data;
 
+    if (self->timeout == 0)
+        return -1;
+
     if (type == HEV_TASK_YIELD) {
         hev_task_yield (HEV_TASK_YIELD);
         return 0;
@@ -48,7 +52,8 @@ hev_socks5_task_io_yielder (HevTaskYieldType type, void *data)
         int timeout = self->timeout;
         timeout = hev_task_sleep (timeout);
         if (timeout <= 0) {
-            LOG_I ("%p io timeout", self);
+            if (self->timeout != 0)
+                self->timed_out = 1;
             return -1;
         }
     }
@@ -68,7 +73,9 @@ hev_socks5_socket (int type)
 
     res = setsockopt (fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof (zero));
     if (res < 0) {
+        int error_code = errno;
         close (fd);
+        errno = error_code;
         return -1;
     }
 
