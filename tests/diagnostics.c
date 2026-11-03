@@ -432,8 +432,14 @@ udp_io_cases (void)
     HEV_SOCKS5 (client)->udp_associated = 1;
     assert (write (fd[1], invalid, sizeof (invalid)) == sizeof (invalid));
     errno = EACCES;
+#ifdef CORE_LEGACY_UDP
     assert (udp_receive (client) < 0);
     expect_log ("target=udp-association", "reason=invalid UDP address code=99");
+#else
+    assert (udp_receive (client) == 1);
+    assert (!HEV_SOCKS5 (client)->failure_logged);
+    expect_silent_failure ();
+#endif
     hev_object_unref (HEV_OBJECT (client));
     close (fd[1]);
 
