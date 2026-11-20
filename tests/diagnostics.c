@@ -710,6 +710,48 @@ recoverable_udp_send (void)
 }
 #else
 static void
+udp_batch_wire_format (void)
+{
+    struct sockaddr_in relay = { .sin_family = AF_INET };
+    socklen_t relay_len = sizeof (relay);
+    struct timeval timeout = { .tv_sec = 2 };
+    unsigned char packet[32];
+    const unsigned char header[] = { 0, 0, 0, 1, 127, 0, 0, 1, 0, 53 };
+    HevSocks5ClientUDP *client;
+    HevSocks5Addr addr;
+    HevSocks5UDPMsg messages[] = { { &addr, "a", 1 },
+                                   { &addr, "b", 1 },
+                                   { &addr, "cd", 2 } };
+    int receiver, i;
+
+    relay.sin_addr.s_addr = htonl (INADDR_LOOPBACK);
+    receiver = socket (AF_INET, SOCK_DGRAM, 0);
+    assert (receiver >= 0);
+    assert (!setsockopt (receiver, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                         sizeof (timeout)));
+    assert (!bind (receiver, (struct sockaddr *)&relay, sizeof (relay)));
+    assert (!getsockname (receiver, (struct sockaddr *)&relay, &relay_len));
+
+    client = hev_socks5_client_udp_new (HEV_SOCKS5_TYPE_UDP_IN_UDP);
+    client->fd = socket (AF_INET, SOCK_DGRAM, 0);
+    assert (client->fd >= 0);
+    assert (!connect (client->fd, (struct sockaddr *)&relay, relay_len));
+    hev_socks5_addr_from_ipv4 (&addr, &relay.sin_addr, htons (53));
+    assert (hev_socks5_udp_sendmmsg (HEV_SOCKS5_UDP (client), messages, 3) ==
+            3);
+    for (i = 0; i < 3; i++) {
+        ssize_t len = recv (receiver, packet, sizeof (packet), 0);
+        assert (len == (ssize_t)(sizeof (header) + messages[i].len));
+        assert (!memcmp (packet, header, sizeof (header)));
+        assert (!memcmp (packet + sizeof (header), messages[i].buf,
+                         messages[i].len));
+    }
+
+    hev_object_unref (HEV_OBJECT (client));
+    close (receiver);
+}
+
+static void
 successful_udp_tcp (int type)
 {
     HevSocks5ClientUDP *client;
@@ -1050,6 +1092,7 @@ regressions (const char *selected)
 #ifdef CORE_LEGACY_UDP
         recoverable_udp_send ();
 #else
+        udp_batch_wire_format ();
         partial_udp_batch (0);
         partial_udp_batch (1);
 #endif

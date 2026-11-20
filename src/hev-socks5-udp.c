@@ -9,6 +9,7 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include <netinet/in.h>
@@ -26,6 +27,15 @@
 #include "hev-socks5-udp.h"
 
 #define UDP_BUF_SIZE 1500
+
+typedef struct
+{
+    uint16_t datlen;
+    uint8_t hdrlen;
+} __attribute__ ((packed)) HevSocks5UDPPrefix;
+
+_Static_assert (sizeof (HevSocks5UDPPrefix) == offsetof (HevSocks5UDPHdr, addr),
+                "UDP send prefix must end at the address field");
 
 static int
 task_io_yielder (HevTaskYieldType type, void *data)
@@ -103,7 +113,7 @@ hev_socks5_udp_sendmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
                              unsigned int num)
 {
     struct iovec iov[num * 3];
-    HevSocks5UDPHdr udp[num];
+    HevSocks5UDPPrefix prefix[num];
     struct msghdr mh;
     size_t length = 0;
     int i, res;
@@ -125,16 +135,16 @@ hev_socks5_udp_sendmmsg_tcp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
             return -1;
         }
 
-        udp[i].datlen = htons (msgv[i].len);
-        udp[i].hdrlen = 3 + addrlen;
+        prefix[i].datlen = htons (msgv[i].len);
+        prefix[i].hdrlen = sizeof (prefix[i]) + addrlen;
 
-        iov[i * 3].iov_base = &udp[i];
-        iov[i * 3].iov_len = 3;
+        iov[i * 3].iov_base = &prefix[i];
+        iov[i * 3].iov_len = sizeof (prefix[i]);
         iov[i * 3 + 1].iov_base = msgv[i].addr;
         iov[i * 3 + 1].iov_len = addrlen;
         iov[i * 3 + 2].iov_base = msgv[i].buf;
         iov[i * 3 + 2].iov_len = msgv[i].len;
-        length += 3 + addrlen + msgv[i].len;
+        length += sizeof (prefix[i]) + addrlen + msgv[i].len;
     }
 
     res = hev_task_io_socket_sendmsg (hev_socks5_udp_get_fd (self), &mh,
@@ -178,10 +188,10 @@ hev_socks5_udp_gso_probe (void)
 
 static int
 hev_socks5_udp_sendmmsg_udp_gso (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
-                                 unsigned int num, struct iovec *iov)
+                                 unsigned int num, struct iovec *iov,
+                                 struct mmsghdr *mvec)
 {
     char ctrl[num][CMSG_SPACE (sizeof (uint16_t))];
-    struct mmsghdr mvec[num];
     unsigned int segs[num];
     int i, n, g, res;
 
@@ -247,7 +257,7 @@ hev_socks5_udp_sendmmsg_udp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
 {
     struct iovec iov[num * 3];
     struct mmsghdr mvec[num];
-    HevSocks5UDPHdr udp[num];
+    HevSocks5UDPPrefix prefix = { 0, 0 };
     int i, res;
 
     for (i = 0; i < num; i++) {
@@ -260,22 +270,12 @@ hev_socks5_udp_sendmmsg_udp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
             return -1;
         }
 
-        udp[i].datlen = 0;
-        udp[i].hdrlen = 0;
-
-        iov[i * 3].iov_base = &udp[i];
-        iov[i * 3].iov_len = 3;
+        iov[i * 3].iov_base = &prefix;
+        iov[i * 3].iov_len = sizeof (prefix);
         iov[i * 3 + 1].iov_base = msgv[i].addr;
         iov[i * 3 + 1].iov_len = addrlen;
         iov[i * 3 + 2].iov_base = msgv[i].buf;
         iov[i * 3 + 2].iov_len = msgv[i].len;
-
-        mvec[i].msg_hdr.msg_name = NULL;
-        mvec[i].msg_hdr.msg_namelen = 0;
-        mvec[i].msg_hdr.msg_control = NULL;
-        mvec[i].msg_hdr.msg_controllen = 0;
-        mvec[i].msg_hdr.msg_iov = &iov[i * 3];
-        mvec[i].msg_hdr.msg_iovlen = 3;
     }
 
 #if defined(__linux__) && defined(UDP_SEGMENT)
@@ -283,7 +283,7 @@ hev_socks5_udp_sendmmsg_udp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
         udp_gso_max_size = hev_socks5_udp_gso_probe ();
 
     if ((num > 1) && udp_gso_max_size) {
-        res = hev_socks5_udp_sendmmsg_udp_gso (self, msgv, num, iov);
+        res = hev_socks5_udp_sendmmsg_udp_gso (self, msgv, num, iov, mvec);
         if (res > 0) {
             HEV_SOCKS5 (self)->timed_out = 0;
             return res;
@@ -294,6 +294,11 @@ hev_socks5_udp_sendmmsg_udp (HevSocks5UDP *self, HevSocks5UDPMsg *msgv,
         }
     }
 #endif /* __linux__ && UDP_SEGMENT */
+
+    for (i = 0; i < num; i++) {
+        mvec[i] = (struct mmsghdr){ .msg_hdr = { .msg_iov = &iov[i * 3],
+                                                 .msg_iovlen = 3 } };
+    }
 
     res = hev_task_io_socket_sendmmsg (hev_socks5_udp_get_fd (self), mvec, num,
                                        MSG_WAITALL, task_io_yielder, self);
