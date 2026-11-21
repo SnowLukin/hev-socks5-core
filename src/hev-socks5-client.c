@@ -100,7 +100,8 @@ hev_socks5_client_write_auth_methods (HevSocks5Client *self, int flags)
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-methods",
                                 error_code && error_code != EAGAIN &&
                                         error_code != EWOULDBLOCK ?
-                                    NULL : "incomplete write",
+                                    NULL :
+                                    "incomplete write",
                                 error_code);
         return -1;
     }
@@ -142,7 +143,8 @@ hev_socks5_client_write_auth_creds (HevSocks5Client *self, int flags)
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-creds",
                                 error_code && error_code != EAGAIN &&
                                         error_code != EWOULDBLOCK ?
-                                    NULL : "incomplete write",
+                                    NULL :
+                                    "incomplete write",
                                 error_code);
         return -1;
     }
@@ -222,7 +224,8 @@ hev_socks5_client_write_request (HevSocks5Client *self)
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-request",
                                 error_code && error_code != EAGAIN &&
                                         error_code != EWOULDBLOCK ?
-                                    NULL : "incomplete write",
+                                    NULL :
+                                    "incomplete write",
                                 error_code);
         return -1;
     }

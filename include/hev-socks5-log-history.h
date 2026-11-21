@@ -10,9 +10,9 @@ typedef struct
     unsigned int max_segments;
 } HevSocks5LogHistoryPolicy;
 
-int hev_socks5_tunnel_log_history_configure (const char *directory,
-                                              const char *connection_id,
-                                              const HevSocks5LogHistoryPolicy *policy);
+int hev_socks5_tunnel_log_history_configure (
+    const char *directory, const char *connection_id,
+    const HevSocks5LogHistoryPolicy *policy);
 int hev_socks5_tunnel_log_history_state (char *buffer, size_t buffer_size);
 
 #endif /* __HEV_SOCKS5_LOG_HISTORY_H__ */

@@ -31,7 +31,7 @@ hev_socks5_set_diagnostic_target (HevSocks5 *self, const char *target)
 
 void
 hev_socks5_log_failure (HevSocks5 *self, const char *operation,
-                         const char *reason, int error_code)
+                        const char *reason, int error_code)
 {
     const char *target = self->diagnostic_target;
     int saved_errno = errno;
