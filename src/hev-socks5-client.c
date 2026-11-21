@@ -9,7 +9,7 @@
 
 #include <errno.h>
 #include <string.h>
-#include <unistd.h>
+#include <hev-sys.h>
 
 #include <hev-task.h>
 #include <hev-task-io.h>
@@ -79,7 +79,7 @@ hev_socks5_client_read_exact (HevSocks5Client *self, void *buf, size_t size,
 }
 
 static int
-hev_socks5_client_write_auth_methods (HevSocks5Client *self)
+hev_socks5_client_write_auth_methods (HevSocks5Client *self, int flags)
 {
     HevSocks5Auth auth;
     int res;
@@ -94,8 +94,7 @@ hev_socks5_client_write_auth_methods (HevSocks5Client *self)
         auth.methods[0] = HEV_SOCKS5_AUTH_METHOD_USER;
 
     res = hev_task_io_socket_send (HEV_SOCKS5 (self)->fd, &auth, 3,
-                                   MSG_WAITALL | MSG_MORE, task_io_yielder,
-                                   self);
+                                   MSG_WAITALL | flags, task_io_yielder, self);
     if (res != 3) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-methods",
@@ -110,7 +109,7 @@ hev_socks5_client_write_auth_methods (HevSocks5Client *self)
 }
 
 static int
-hev_socks5_client_write_auth_creds (HevSocks5Client *self)
+hev_socks5_client_write_auth_creds (HevSocks5Client *self, int flags)
 {
     struct msghdr mh = { 0 };
     struct iovec iov[4];
@@ -136,9 +135,8 @@ hev_socks5_client_write_auth_creds (HevSocks5Client *self)
 
     mh.msg_iov = iov;
     mh.msg_iovlen = 4;
-    res = hev_task_io_socket_sendmsg (HEV_SOCKS5 (self)->fd, &mh,
-                                      MSG_WAITALL | MSG_MORE, task_io_yielder,
-                                      self);
+    res = hev_task_io_socket_sendmsg (
+        HEV_SOCKS5 (self)->fd, &mh, MSG_WAITALL | flags, task_io_yielder, self);
     if (res != 3 + ub[1] + ub[2]) {
         int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-auth-creds",
@@ -160,6 +158,7 @@ hev_socks5_client_write_request (HevSocks5Client *self)
     struct iovec iov[2];
     HevSocks5Addr *addr;
     HevSocks5ReqRes req;
+    int error_code;
     int addrlen;
     int ret;
 
@@ -217,18 +216,16 @@ hev_socks5_client_write_request (HevSocks5Client *self)
     mh.msg_iovlen = 2;
     ret = hev_task_io_socket_sendmsg (HEV_SOCKS5 (self)->fd, &mh, MSG_WAITALL,
                                       task_io_yielder, self);
+    error_code = errno;
+    hev_free (addr);
     if (ret != 3 + addrlen) {
-        int error_code = errno;
         hev_socks5_log_failure (HEV_SOCKS5 (self), "write-request",
                                 error_code && error_code != EAGAIN &&
                                         error_code != EWOULDBLOCK ?
                                     NULL : "incomplete write",
                                 error_code);
-        hev_free (addr);
         return -1;
     }
-
-    hev_free (addr);
 
     return 0;
 }
@@ -379,7 +376,7 @@ hev_socks5_client_connect (HevSocks5Client *self, const char *addr, int port)
         hev_socks5_log_failure (HEV_SOCKS5 (self), "proxy-bind", NULL,
                                 error_code);
         hev_task_del_fd (hev_task_self (), fd);
-        close (fd);
+        hev_task_io_close (fd);
         return -1;
     }
 
@@ -390,7 +387,7 @@ hev_socks5_client_connect (HevSocks5Client *self, const char *addr, int port)
         hev_socks5_log_failure (HEV_SOCKS5 (self), "proxy-connect", NULL,
                                 error_code);
         hev_task_del_fd (hev_task_self (), fd);
-        close (fd);
+        hev_task_io_close (fd);
         return -1;
     }
 
@@ -408,7 +405,7 @@ hev_socks5_client_handshake_standard (HevSocks5Client *self)
 
     LOG_D ("%p socks5 client handshake standard", self);
 
-    res = hev_socks5_client_write_auth_methods (self);
+    res = hev_socks5_client_write_auth_methods (self, 0);
     if (res < 0)
         return -1;
 
@@ -417,7 +414,7 @@ hev_socks5_client_handshake_standard (HevSocks5Client *self)
         return -1;
 
     if (res == HEV_SOCKS5_AUTH_METHOD_USER) {
-        res = hev_socks5_client_write_auth_creds (self);
+        res = hev_socks5_client_write_auth_creds (self, 0);
         if (res < 0)
             return -1;
 
@@ -448,11 +445,11 @@ hev_socks5_client_handshake_pipeline (HevSocks5Client *self)
 
     LOG_D ("%p socks5 client handshake pipeline", self);
 
-    res = hev_socks5_client_write_auth_methods (self);
+    res = hev_socks5_client_write_auth_methods (self, MSG_MORE);
     if (res < 0)
         return -1;
 
-    res = hev_socks5_client_write_auth_creds (self);
+    res = hev_socks5_client_write_auth_creds (self, MSG_MORE);
     if (res < 0)
         return -1;
 

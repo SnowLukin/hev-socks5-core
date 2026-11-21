@@ -10,8 +10,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
+#include <hev-sys.h>
 
 #include <hev-task.h>
 #include <hev-task-io.h>
@@ -71,10 +70,11 @@ hev_socks5_socket (int type)
     if (fd < 0)
         return -1;
 
-    res = setsockopt (fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof (zero));
+    res = hev_task_io_socket_setsockopt (fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero,
+                                         sizeof (zero));
     if (res < 0) {
         int error_code = errno;
-        close (fd);
+        hev_task_io_close (fd);
         errno = error_code;
         return -1;
     }
@@ -85,7 +85,8 @@ hev_socks5_socket (int type)
 
     if (type == SOCK_DGRAM) {
         res = udp_recv_buffer_size;
-        setsockopt (fd, SOL_SOCKET, SO_RCVBUF, &res, sizeof (res));
+        hev_task_io_socket_setsockopt (fd, SOL_SOCKET, SO_RCVBUF, &res,
+                                       sizeof (res));
     }
 
     return fd;

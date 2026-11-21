@@ -9,7 +9,7 @@
 
 #include <errno.h>
 #include <string.h>
-#include <unistd.h>
+#include <hev-sys.h>
 
 #include <hev-task.h>
 #include <hev-task-io.h>
@@ -110,7 +110,7 @@ hev_socks5_client_udp_set_upstream_addr (HevSocks5Client *base,
         hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-bind", NULL,
                                  error_code);
         hev_task_del_fd (hev_task_self (), fd);
-        close (fd);
+        hev_task_io_close (fd);
         return -1;
     }
 
@@ -121,7 +121,7 @@ hev_socks5_client_udp_set_upstream_addr (HevSocks5Client *base,
         hev_socks5_log_failure (HEV_SOCKS5 (self), "udp-connect", NULL,
                                  error_code);
         hev_task_del_fd (hev_task_self (), fd);
-        close (fd);
+        hev_task_io_close (fd);
         return -1;
     }
 
@@ -177,7 +177,7 @@ hev_socks5_client_udp_destruct (HevObject *base)
 
     if (self->fd >= 0) {
         hev_task_del_fd (hev_task_self (), self->fd);
-        close (self->fd);
+        hev_task_io_close (self->fd);
     }
 
     HEV_SOCKS5_CLIENT_TYPE->destruct (base);
