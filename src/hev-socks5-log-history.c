@@ -23,7 +23,8 @@
 #define HEV_LOG_HISTORY_MAX_DIRECTORY_BYTES 1024u
 #define HEV_LOG_HISTORY_MAX_CONNECTION_ID_BYTES 512u
 
-struct log_part {
+struct log_part
+{
     char *path;
     off_t bytes;
     uint64_t ordinal;
@@ -176,7 +177,8 @@ json_string (const char *value)
 }
 
 static char *
-build_record (const char *level, const char *kind, const char *message, int truncated)
+build_record (const char *level, const char *kind, const char *message,
+              int truncated)
 {
     char timestamp[40];
     struct timeval now;
@@ -190,23 +192,27 @@ build_record (const char *level, const char *kind, const char *message, int trun
         return NULL;
     if (!gmtime_r (&now.tv_sec, &utc))
         return NULL;
-    if (0 == strftime (timestamp, sizeof (timestamp), "%Y-%m-%dT%H:%M:%S", &utc))
+    if (0 ==
+        strftime (timestamp, sizeof (timestamp), "%Y-%m-%dT%H:%M:%S", &utc))
         return NULL;
     snprintf (timestamp + strlen (timestamp),
-              sizeof (timestamp) - strlen (timestamp), ".%06dZ", (int)now.tv_usec);
+              sizeof (timestamp) - strlen (timestamp), ".%06dZ",
+              (int)now.tv_usec);
 
     escaped_message = json_string (message);
-    escaped_connection = history_connection_id ? json_string (history_connection_id) : NULL;
+    escaped_connection =
+        history_connection_id ? json_string (history_connection_id) : NULL;
     if (!escaped_message || (history_connection_id && !escaped_connection)) {
         free (escaped_message);
         free (escaped_connection);
         return NULL;
     }
 
-    length = snprintf (NULL, 0,
-                       "{\"v\":1,\"timestamp\":\"%s\",\"source\":\"tun2socks\",\"level\":\"%s\",\"connectionId\":%s,\"kind\":\"%s\",\"message\":%s%s}\n",
-                       timestamp, level, escaped_connection ? escaped_connection : "null",
-                       kind, escaped_message, truncated ? ",\"truncated\":true" : "");
+    length = snprintf (
+        NULL, 0,
+        "{\"v\":1,\"timestamp\":\"%s\",\"source\":\"tun2socks\",\"level\":\"%s\",\"connectionId\":%s,\"kind\":\"%s\",\"message\":%s%s}\n",
+        timestamp, level, escaped_connection ? escaped_connection : "null",
+        kind, escaped_message, truncated ? ",\"truncated\":true" : "");
     if (length < 0) {
         free (escaped_message);
         free (escaped_connection);
@@ -215,10 +221,11 @@ build_record (const char *level, const char *kind, const char *message, int trun
 
     record = malloc ((size_t)length + 1);
     if (record) {
-        snprintf (record, (size_t)length + 1,
-                  "{\"v\":1,\"timestamp\":\"%s\",\"source\":\"tun2socks\",\"level\":\"%s\",\"connectionId\":%s,\"kind\":\"%s\",\"message\":%s%s}\n",
-                  timestamp, level, escaped_connection ? escaped_connection : "null",
-                  kind, escaped_message, truncated ? ",\"truncated\":true" : "");
+        snprintf (
+            record, (size_t)length + 1,
+            "{\"v\":1,\"timestamp\":\"%s\",\"source\":\"tun2socks\",\"level\":\"%s\",\"connectionId\":%s,\"kind\":\"%s\",\"message\":%s%s}\n",
+            timestamp, level, escaped_connection ? escaped_connection : "null",
+            kind, escaped_message, truncated ? ",\"truncated\":true" : "");
     }
     free (escaped_message);
     free (escaped_connection);
@@ -235,18 +242,22 @@ write_state_locked (const char *status, const char *error_code)
     int fd;
     int length;
 
-    escaped_connection = history_connection_id ? json_string (history_connection_id) : NULL;
+    escaped_connection =
+        history_connection_id ? json_string (history_connection_id) : NULL;
     if (history_connection_id && !escaped_connection)
         return -1;
 
     if (error_code) {
-        length = snprintf (state, sizeof (state),
-                           "{\"v\":1,\"status\":\"%s\",\"connectionId\":%s,\"errorCode\":\"%s\"}\n",
-                           status, escaped_connection ? escaped_connection : "null", error_code);
+        length = snprintf (
+            state, sizeof (state),
+            "{\"v\":1,\"status\":\"%s\",\"connectionId\":%s,\"errorCode\":\"%s\"}\n",
+            status, escaped_connection ? escaped_connection : "null",
+            error_code);
     } else {
         length = snprintf (state, sizeof (state),
                            "{\"v\":1,\"status\":\"%s\",\"connectionId\":%s}\n",
-                           status, escaped_connection ? escaped_connection : "null");
+                           status,
+                           escaped_connection ? escaped_connection : "null");
     }
     free (escaped_connection);
 
@@ -273,7 +284,8 @@ write_state_locked (const char *status, const char *error_code)
     }
     {
         char path[PATH_MAX];
-        snprintf (path, sizeof (path), "%s/tun2socks.state.json", history_directory);
+        snprintf (path, sizeof (path), "%s/tun2socks.state.json",
+                  history_directory);
         if (rename (temporary, path) < 0) {
             unlink (temporary);
             return -1;
@@ -410,15 +422,17 @@ collect_parts_locked (struct log_part **parts, size_t *count, uint64_t *highest)
         numbered = is_part_name (entry->d_name, &number);
         if (!numbered && !is_legacy_name (entry->d_name))
             continue;
-        if (snprintf (path, sizeof (path), "%s/%s", history_directory, entry->d_name) >=
-            (int)sizeof (path))
+        if (snprintf (path, sizeof (path), "%s/%s", history_directory,
+                      entry->d_name) >= (int)sizeof (path))
             continue;
         if (stat (path, &st) < 0 || !S_ISREG (st.st_mode))
             continue;
-        if (append_part (parts, count, &capacity, path, &st,
-                         numbered ? number : (0 == strcmp (entry->d_name, "tun2socks.log.old") ? 0 : 1),
-                         !numbered,
-                         0 == strcmp (path, history_active_path)) < 0) {
+        if (append_part (
+                parts, count, &capacity, path, &st,
+                numbered ?
+                    number :
+                    (0 == strcmp (entry->d_name, "tun2socks.log.old") ? 0 : 1),
+                !numbered, 0 == strcmp (path, history_active_path)) < 0) {
             closedir (dir);
             free_parts (*parts, *count);
             return -1;
@@ -460,7 +474,8 @@ cleanup_locked (off_t reserved_bytes)
     size_t remaining;
     off_t bytes = 0;
 
-    if (reserved_bytes < 0 || reserved_bytes > (off_t)history_policy.max_source_bytes)
+    if (reserved_bytes < 0 ||
+        reserved_bytes > (off_t)history_policy.max_source_bytes)
         return -1;
     if (collect_parts_locked (&parts, &count, &highest) < 0)
         return -1;
@@ -472,7 +487,8 @@ cleanup_locked (off_t reserved_bytes)
     qsort (parts, count, sizeof (*parts), part_compare);
 
     for (index = 0; index < original_count &&
-         (remaining > history_policy.max_segments || bytes > (off_t)history_policy.max_source_bytes);
+                    (remaining > history_policy.max_segments ||
+                     bytes > (off_t)history_policy.max_source_bytes);
          index++) {
         if (parts[index].active)
             continue;
@@ -500,8 +516,9 @@ open_new_part_locked (void)
 
     if (history_next_number == 0)
         return -1;
-    if (snprintf (path, sizeof (path), "%s/tun2socks.%020llu.jsonl", history_directory,
-                  (unsigned long long)history_next_number) >= (int)sizeof (path))
+    if (snprintf (path, sizeof (path), "%s/tun2socks.%020llu.jsonl",
+                  history_directory, (unsigned long long)history_next_number) >=
+        (int)sizeof (path))
         return -1;
     fd = open (path, O_WRONLY | O_APPEND | O_CREAT | O_EXCL, 0640);
     if (fd < 0)
@@ -562,7 +579,8 @@ open_history_locked (void)
     }
 
     history_next_number = found && highest == UINT64_MAX ? 0 : highest + 1;
-    if (found && parts[last_index].bytes < (off_t)history_policy.max_segment_bytes &&
+    if (found &&
+        parts[last_index].bytes < (off_t)history_policy.max_segment_bytes &&
         part_has_newline (parts[last_index].path, parts[last_index].bytes)) {
         fd = open (parts[last_index].path, O_WRONLY | O_APPEND);
         if (fd < 0) {
@@ -637,14 +655,17 @@ hev_socks5_tunnel_log_history_configure (const char *directory,
     if (resolved.max_segment_bytes < HEV_LOG_HISTORY_MIN_SEGMENT_BYTES ||
         resolved.max_source_bytes < resolved.max_segment_bytes ||
         resolved.max_segments == 0 ||
-        resolved.max_segments > resolved.max_source_bytes / resolved.max_segment_bytes)
+        resolved.max_segments >
+            resolved.max_source_bytes / resolved.max_segment_bytes)
         return -1;
 
     if (directory && directory[0]) {
-        directory_copy = copy_string (directory, HEV_LOG_HISTORY_MAX_DIRECTORY_BYTES);
+        directory_copy =
+            copy_string (directory, HEV_LOG_HISTORY_MAX_DIRECTORY_BYTES);
         if (!directory_copy)
             return -1;
-        connection_copy = copy_string (connection_id, HEV_LOG_HISTORY_MAX_CONNECTION_ID_BYTES);
+        connection_copy = copy_string (connection_id,
+                                       HEV_LOG_HISTORY_MAX_CONNECTION_ID_BYTES);
         if (connection_id && !connection_copy) {
             free (directory_copy);
             return -1;
@@ -667,7 +688,8 @@ hev_socks5_tunnel_log_history_configure (const char *directory,
                 history_failed = 1;
                 write_state_locked ("failed", "write-failed");
                 state_failed = 1;
-            } else if (!previous_failed && write_state_locked ("closed", NULL) < 0) {
+            } else if (!previous_failed &&
+                       write_state_locked ("closed", NULL) < 0) {
                 history_failed = 1;
                 write_state_locked ("failed", "state-write-failed");
                 state_failed = 1;
@@ -803,7 +825,8 @@ hev_socks5_log_history_write (const char *level, const char *message)
     length = strlen (record);
     if (length > history_policy.max_segment_bytes) {
         free (record);
-        record = build_record (level, "log", "record exceeds maxSegmentBytes", 1);
+        record =
+            build_record (level, "log", "record exceeds maxSegmentBytes", 1);
         if (!record) {
             fail_locked ("encode-failed");
             pthread_mutex_unlock (&history_lock);
@@ -819,7 +842,8 @@ hev_socks5_log_history_write (const char *level, const char *message)
     }
 
     if (history_active_bytes > 0 &&
-        history_active_bytes + (off_t)length > (off_t)history_policy.max_segment_bytes) {
+        history_active_bytes + (off_t)length >
+            (off_t)history_policy.max_segment_bytes) {
         close (history_fd);
         history_fd = -1;
         if (open_new_part_locked () < 0) {

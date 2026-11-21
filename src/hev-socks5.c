@@ -10,8 +10,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
+#include <hev-sys.h>
 
 #include <hev-task.h>
 #include <hev-task-io.h>
@@ -32,7 +31,7 @@ hev_socks5_set_diagnostic_target (HevSocks5 *self, const char *target)
 
 void
 hev_socks5_log_failure (HevSocks5 *self, const char *operation,
-                         const char *reason, int error_code)
+                        const char *reason, int error_code)
 {
     const char *target = self->diagnostic_target;
     int saved_errno = errno;
@@ -124,7 +123,7 @@ hev_socks5_destruct (HevObject *base)
 
     if (self->fd >= 0) {
         hev_task_del_fd (hev_task_self (), self->fd);
-        close (self->fd);
+        hev_task_io_close (self->fd);
     }
 
     HEV_OBJECT_TYPE->destruct (base);

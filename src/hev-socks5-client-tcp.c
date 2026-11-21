@@ -124,8 +124,7 @@ hev_socks5_client_tcp_construct (HevSocks5ClientTCP *self,
         return -1;
     memcpy (self->addr, addr, res);
 
-    hev_socks5_addr_into_str (self->addr,
-                              HEV_SOCKS5 (self)->diagnostic_target,
+    hev_socks5_addr_into_str (self->addr, HEV_SOCKS5 (self)->diagnostic_target,
                               sizeof (HEV_SOCKS5 (self)->diagnostic_target));
     LOG_I ("%p socks5 client tcp -> %s", self,
            HEV_SOCKS5 (self)->diagnostic_target);
